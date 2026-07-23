@@ -1,0 +1,353 @@
+// services/storageTargets.ts
+//
+// Recording storage API used by the Expo dashboard.
+// The Socket.IO/recording backend runs on port 3000.
+
+import Constants from "expo-constants";
+import { Platform } from "react-native";
+
+export type StorageTargetType =
+  | "LOCAL"
+  | "EXTERNAL_DRIVE"
+  | "NAS"
+  | "NVR"
+  | "NVR_MOUNT";
+
+export type StorageTargetStatus =
+  | "AVAILABLE"
+  | "UNAVAILABLE"
+  | "ERROR"
+  | "UNKNOWN";
+
+export interface StorageTarget {
+  id: string;
+  name: string;
+  type: StorageTargetType;
+  rootPath: string;
+  isDefault: boolean;
+  isEnabled: boolean;
+  status: StorageTargetStatus;
+  retentionEnabled: boolean;
+  retentionDays: number;
+  maxUsagePercent: number;
+  minFreeBytes: number;
+  lastCleanupAt: string | null;
+  lastCleanupDeleted: number;
+  lastCleanupFreedBytes: number;
+  totalBytes: number;
+  availableBytes: number;
+  usedBytes: number;
+  lastHealthCheckAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CleanupCandidate {
+  id: string;
+  cameraId: string;
+  fileName: string;
+  startedAt: string;
+  durationSeconds: number;
+  sizeBytes: number;
+  reason: string;
+}
+
+export interface CleanupPreview {
+  target: StorageTarget;
+  enabled: boolean;
+  forced: boolean;
+  policy: {
+    retentionDays: number;
+    maxUsagePercent: number;
+    minFreeBytes: number;
+  };
+  capacity: {
+    totalBytes: number;
+    usedBytes: number;
+    availableBytes: number;
+    currentUsagePercent: number;
+    requiredByUsage: number;
+    requiredByFree: number;
+    capacityBytesRequired: number;
+    predictedUsedBytes: number;
+    predictedAvailableBytes: number;
+    predictedUsagePercent: number;
+  };
+  unlockedCount: number;
+  lockedCount: number;
+  deleteCount: number;
+  estimatedFreedBytes: number;
+  cutoff: string;
+  candidates: CleanupCandidate[];
+  candidateListTruncated: boolean;
+}
+
+export interface CleanupRunResult {
+  ok: boolean;
+  skipped: boolean;
+  reason?: string;
+  target?: StorageTarget;
+  deletedCount: number;
+  freedBytes: number;
+  failures: Array<{
+    recordingId: string;
+    fileName?: string;
+    error: string;
+  }>;
+  preview: CleanupPreview;
+  completedAt?: string;
+}
+
+export interface StorageCandidate {
+  rootPath: string;
+  filesystemType: string | null;
+  source: string;
+  status: StorageTargetStatus;
+  writable: boolean;
+  totalBytes: number;
+  availableBytes: number;
+}
+
+interface StorageTargetsResponse {
+  ok: boolean;
+  count: number;
+  storageTargets: StorageTarget[];
+}
+
+interface StorageCandidatesResponse {
+  ok: boolean;
+  count: number;
+  candidates: StorageCandidate[];
+}
+
+function normalizeServerUrl(value: string): string {
+  return value.trim().replace(/\/+$/, "");
+}
+
+export function getRecordingServerUrl(): string {
+  if (Platform.OS === "web" && typeof window !== "undefined") {
+    const browserHost = window.location.hostname;
+    const backendHost =
+      browserHost === "localhost" ? "127.0.0.1" : browserHost;
+
+    return `http://${backendHost}:3000`;
+  }
+
+  const configured =
+    process.env.EXPO_PUBLIC_SERVER_URL ||
+    Constants.expoConfig?.extra?.serverUrl;
+
+  if (typeof configured === "string" && configured.trim()) {
+    return normalizeServerUrl(configured);
+  }
+
+  throw new Error(
+    "The recording backend URL could not be determined.",
+  );
+}
+
+async function apiRequest<T>(
+  path: string,
+  options: RequestInit = {},
+): Promise<T> {
+  const serverUrl = getRecordingServerUrl();
+  const response = await fetch(`${serverUrl}${path}`, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
+  });
+
+  let payload: unknown = null;
+
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+
+  if (!response.ok) {
+    const message =
+      payload &&
+      typeof payload === "object" &&
+      "error" in payload &&
+      typeof payload.error === "string"
+        ? payload.error
+        : `Storage API request failed with HTTP ${response.status}`;
+
+    throw new Error(message);
+  }
+
+  return payload as T;
+}
+
+export async function listStorageTargets(): Promise<StorageTarget[]> {
+  const response =
+    await apiRequest<StorageTargetsResponse>("/storage-targets");
+
+  return response.storageTargets || [];
+}
+
+export async function listStorageCandidates(): Promise<
+  StorageCandidate[]
+> {
+  const response =
+    await apiRequest<StorageCandidatesResponse>(
+      "/storage-targets/candidates",
+    );
+
+  return response.candidates || [];
+}
+
+export async function createStorageTarget(input: {
+  name: string;
+  type: StorageTargetType;
+  rootPath: string;
+  isDefault?: boolean;
+}): Promise<StorageTarget> {
+  const response = await apiRequest<{
+    ok: boolean;
+    storageTarget: StorageTarget;
+  }>("/storage-targets", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+
+  return response.storageTarget;
+}
+
+export async function updateStorageTarget(
+  id: string,
+  input: Partial<
+    Pick<
+      StorageTarget,
+      "name" | "type" | "rootPath" | "isEnabled"
+    >
+  >,
+): Promise<StorageTarget> {
+  const response = await apiRequest<{
+    ok: boolean;
+    storageTarget: StorageTarget;
+  }>(`/storage-targets/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+
+  return response.storageTarget;
+}
+
+export async function testStorageTarget(
+  id: string,
+): Promise<StorageTarget> {
+  const response = await apiRequest<{
+    ok: boolean;
+    storageTarget: StorageTarget;
+  }>(`/storage-targets/${encodeURIComponent(id)}/test`, {
+    method: "POST",
+  });
+
+  return response.storageTarget;
+}
+
+export async function setDefaultStorageTarget(
+  id: string,
+): Promise<StorageTarget> {
+  const response = await apiRequest<{
+    ok: boolean;
+    storageTarget: StorageTarget;
+  }>(`/storage-targets/${encodeURIComponent(id)}/default`, {
+    method: "POST",
+  });
+
+  return response.storageTarget;
+}
+
+export async function deleteStorageTarget(
+  id: string,
+): Promise<void> {
+  await apiRequest<{ ok: boolean }>(
+    `/storage-targets/${encodeURIComponent(id)}`,
+    {
+      method: "DELETE",
+    },
+  );
+}
+
+export async function getRetentionSettings(
+  id: string,
+): Promise<StorageTarget> {
+  const response = await apiRequest<{
+    ok: boolean;
+    storageTarget: StorageTarget;
+  }>(
+    `/storage-targets/${encodeURIComponent(id)}/retention`,
+  );
+
+  return response.storageTarget;
+}
+
+export async function updateRetentionSettings(
+  id: string,
+  input: {
+    retentionEnabled: boolean;
+    retentionDays: number;
+    maxUsagePercent: number;
+    minFreeGigabytes: number;
+  },
+): Promise<StorageTarget> {
+  const response = await apiRequest<{
+    ok: boolean;
+    storageTarget: StorageTarget;
+  }>(
+    `/storage-targets/${encodeURIComponent(id)}/retention`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    },
+  );
+
+  return response.storageTarget;
+}
+
+export async function previewStorageCleanup(
+  id: string,
+  force = false,
+): Promise<CleanupPreview> {
+  const response = await apiRequest<{
+    ok: boolean;
+    preview: CleanupPreview;
+  }>(
+    `/storage-targets/${encodeURIComponent(
+      id,
+    )}/cleanup-preview`,
+    {
+      method: "POST",
+      body: JSON.stringify({ force }),
+    },
+  );
+
+  return response.preview;
+}
+
+export async function runStorageCleanup(
+  id: string,
+  force = false,
+): Promise<CleanupRunResult> {
+  const response = await apiRequest<{
+    ok: boolean;
+    result: CleanupRunResult;
+  }>(
+    `/storage-targets/${encodeURIComponent(
+      id,
+    )}/cleanup-run`,
+    {
+      method: "POST",
+      body: JSON.stringify({ force }),
+    },
+  );
+
+  return response.result;
+}
+

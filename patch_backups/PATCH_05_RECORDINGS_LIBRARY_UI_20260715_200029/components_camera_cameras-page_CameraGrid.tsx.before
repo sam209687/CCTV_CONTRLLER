@@ -1,0 +1,782 @@
+// components/camera/cameras-page/CameraGrid.tsx
+
+import React, { useMemo } from "react";
+import { Text, TouchableOpacity, View } from "react-native";
+
+import LiveStream from "@/components/camera/LiveStream";
+import {
+  buildCameraForPreview,
+  getCameraReferenceId,
+  hasUsableCameraStream,
+  styles,
+} from "@/components/camera/cameras-page/cameraPageShared";
+import type { ThemeColors } from "@/contexts/ThemeContext";
+import type { Camera } from "@/types";
+
+interface StatsBarProps {
+  total: number;
+  active: number;
+  colors: ThemeColors;
+}
+
+export function StatsBar({
+  total,
+  active,
+  colors,
+}: StatsBarProps) {
+  return (
+    <View
+      style={[
+        styles.statsBar,
+        { backgroundColor: colors.surface },
+      ]}
+    >
+      <StatItem
+        icon="📹"
+        label="Total"
+        value={total}
+        color={colors.primary}
+      />
+      <StatItem
+        icon="✅"
+        label="Online"
+        value={active}
+        color={colors.success}
+      />
+      <StatItem
+        icon="🤖"
+        label="AI Active"
+        value={active}
+        color={colors.secondary}
+      />
+      <StatItem
+        icon="⚡"
+        label="Edge AI"
+        value={Math.min(active, 2)}
+        color={colors.warning}
+      />
+    </View>
+  );
+}
+
+interface QuickActionsProps {
+  colors: ThemeColors;
+  onAdd: () => void;
+  onDiscover: () => void;
+  onAutoSetup: () => void;
+  onStorage: () => void;
+}
+
+export function QuickActions({
+  colors,
+  onAdd,
+  onDiscover,
+  onAutoSetup,
+  onStorage,
+}: QuickActionsProps) {
+  return (
+    <View style={styles.section}>
+      <Text
+        style={[
+          styles.sectionTitle,
+          { color: colors.text },
+        ]}
+      >
+        Quick Actions
+      </Text>
+
+      <View style={styles.actionsRow}>
+        <ActionButton
+          icon="➕"
+          label="Add Camera"
+          color={colors.primary}
+          onPress={onAdd}
+        />
+        <ActionButton
+          icon="🔍"
+          label="Discover"
+          color={colors.secondary}
+          onPress={onDiscover}
+        />
+        <ActionButton
+          icon="🎯"
+          label="Auto Setup"
+          color={colors.success}
+          onPress={onAutoSetup}
+        />
+        <ActionButton
+          icon="💾"
+          label="Storage"
+          color={colors.warning}
+          onPress={onStorage}
+        />
+      </View>
+    </View>
+  );
+}
+
+interface CameraGridSectionProps {
+  cameras: Camera[];
+  allCameraCount: number;
+  hiddenCount: number;
+  loading: boolean;
+  colors: ThemeColors;
+  activePreviewCameraId: string | null;
+  onAddCamera: () => void;
+  onRestoreHidden: () => void;
+  onOpenCamera: (camera: Camera) => void;
+  onClosePreview: () => void;
+  onExpandCamera: (camera: Camera) => void;
+  onOpenAudio: (camera: Camera) => void;
+  onOpenSettings: (camera: Camera) => void;
+  onHideCamera: (camera: Camera) => void;
+}
+
+export function CameraGridSection({
+  cameras,
+  allCameraCount,
+  hiddenCount,
+  loading,
+  colors,
+  activePreviewCameraId,
+  onAddCamera,
+  onRestoreHidden,
+  onOpenCamera,
+  onClosePreview,
+  onExpandCamera,
+  onOpenAudio,
+  onOpenSettings,
+  onHideCamera,
+}: CameraGridSectionProps) {
+  return (
+    <View style={styles.section}>
+      <View style={styles.sectionHeader}>
+        <Text
+          style={[
+            styles.sectionTitle,
+            { color: colors.text },
+          ]}
+        >
+          Cameras ({cameras.length})
+        </Text>
+
+        <View style={styles.sectionHeaderActions}>
+          {hiddenCount > 0 && (
+            <TouchableOpacity
+              onPress={onRestoreHidden}
+              activeOpacity={0.7}
+            >
+              <Text
+                style={[
+                  styles.restoreHiddenText,
+                  { color: colors.warning },
+                ]}
+              >
+                Restore hidden ({hiddenCount})
+              </Text>
+            </TouchableOpacity>
+          )}
+
+          <Text
+            style={[
+              styles.viewToggle,
+              { color: colors.primary },
+            ]}
+          >
+            Click a card for preview
+          </Text>
+        </View>
+      </View>
+
+      {loading ? (
+        <Text
+          style={[
+            styles.loadingText,
+            { color: colors.textSecondary },
+          ]}
+        >
+          Loading cameras...
+        </Text>
+      ) : allCameraCount === 0 ? (
+        <EmptyState
+          colors={colors}
+          onAddCamera={onAddCamera}
+        />
+      ) : cameras.length === 0 ? (
+        <HiddenCamerasState
+          colors={colors}
+          hiddenCount={hiddenCount}
+          onRestore={onRestoreHidden}
+        />
+      ) : (
+        <View style={styles.cameraGrid}>
+          {cameras.map((camera) => (
+            <CameraCard
+              key={String(camera.id)}
+              camera={camera}
+              colors={colors}
+              previewActive={
+                activePreviewCameraId === String(camera.id)
+              }
+              onPress={() => onOpenCamera(camera)}
+              onClosePreview={onClosePreview}
+              onExpandPreview={() => onExpandCamera(camera)}
+              onAudioPress={() => onOpenAudio(camera)}
+              onSettingsPress={() => onOpenSettings(camera)}
+              onClose={() => onHideCamera(camera)}
+            />
+          ))}
+        </View>
+      )}
+    </View>
+  );
+}
+
+export function AIFeaturesSection({
+  colors,
+}: {
+  colors: ThemeColors;
+}) {
+  return (
+    <View style={styles.section}>
+      <Text
+        style={[
+          styles.sectionTitle,
+          { color: colors.text },
+        ]}
+      >
+        AI Capabilities
+      </Text>
+      <AIFeaturesGrid colors={colors} />
+    </View>
+  );
+}
+
+function StatItem({
+  icon,
+  label,
+  value,
+  color,
+}: {
+  icon: string;
+  label: string;
+  value: number;
+  color: string;
+}) {
+  return (
+    <View style={styles.statItem}>
+      <Text style={styles.statIcon}>{icon}</Text>
+      <View>
+        <Text style={[styles.statValue, { color }]}>
+          {value}
+        </Text>
+        <Text
+          style={[
+            styles.statLabel,
+            { color: "#94A3B8" },
+          ]}
+        >
+          {label}
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+function ActionButton({
+  icon,
+  label,
+  color,
+  onPress,
+}: {
+  icon: string;
+  label: string;
+  color: string;
+  onPress: () => void;
+}) {
+  return (
+    <TouchableOpacity
+      style={[
+        styles.actionButton,
+        { backgroundColor: `${color}15` },
+      ]}
+      onPress={onPress}
+      activeOpacity={0.7}
+    >
+      <Text style={styles.actionButtonIcon}>{icon}</Text>
+      <Text
+        style={[
+          styles.actionButtonText,
+          { color },
+        ]}
+      >
+        {label}
+      </Text>
+    </TouchableOpacity>
+  );
+}
+
+interface CameraCardProps {
+  camera: Camera;
+  colors: ThemeColors;
+  previewActive: boolean;
+  onPress: () => void;
+  onClosePreview: () => void;
+  onExpandPreview: () => void;
+  onAudioPress: () => void;
+  onSettingsPress: () => void;
+  onClose: () => void;
+}
+
+function CameraCard({
+  camera,
+  colors,
+  previewActive,
+  onPress,
+  onClosePreview,
+  onExpandPreview,
+  onAudioPress,
+  onSettingsPress,
+  onClose,
+}: CameraCardProps) {
+  const cameraReferenceId = getCameraReferenceId(camera);
+  const configured = hasUsableCameraStream(camera);
+  const statusText = configured
+    ? camera.isActive
+      ? "READY"
+      : "OFFLINE"
+    : "NOT SET";
+  const statusColor = configured
+    ? camera.isActive
+      ? colors.success
+      : colors.error
+    : colors.warning;
+
+  const previewCamera = useMemo(
+    () => buildCameraForPreview(camera),
+    [camera],
+  );
+
+  return (
+    <View
+      style={[
+        styles.cameraCard,
+        { backgroundColor: colors.surface },
+      ]}
+    >
+      <TouchableOpacity
+        style={styles.removeCameraButton}
+        onPress={(event) => {
+          event.stopPropagation();
+          onClose();
+        }}
+        activeOpacity={0.8}
+        accessibilityRole="button"
+        accessibilityLabel={`Hide ${
+          camera.name || camera.id
+        }`}
+      >
+        <Text style={styles.removeCameraButtonText}>
+          ✕
+        </Text>
+      </TouchableOpacity>
+
+      <View
+        style={[
+          styles.statusBadge,
+          { backgroundColor: statusColor },
+        ]}
+      >
+        <View style={styles.statusDot} />
+        <Text style={styles.statusText}>{statusText}</Text>
+      </View>
+
+      {previewActive && configured ? (
+        <View style={styles.inlinePreviewContainer}>
+          <LiveStream
+            key={`${String(previewCamera.id)}-${
+              previewCamera.streamUrl ||
+              previewCamera.rtspUrl ||
+              ""
+            }`}
+            camera={previewCamera}
+            displayMode="inline"
+          />
+
+          <View style={styles.inlinePreviewFooter}>
+            <Text style={styles.inlinePreviewStatusText}>
+              Live preview is active
+            </Text>
+
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 8,
+              }}
+            >
+              <TouchableOpacity
+                style={[
+                  styles.stopPreviewButton,
+                  { backgroundColor: colors.primary },
+                ]}
+                onPress={(event) => {
+                  event.stopPropagation();
+                  onExpandPreview();
+                }}
+                activeOpacity={0.8}
+                accessibilityRole="button"
+                accessibilityLabel="Open expanded camera preview"
+              >
+                <Text style={styles.stopPreviewButtonText}>
+                  Expand
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.stopPreviewButton}
+                onPress={(event) => {
+                  event.stopPropagation();
+                  onClosePreview();
+                }}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.stopPreviewButtonText}>
+                  Stop
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      ) : (
+        <TouchableOpacity
+          style={styles.thumbnail}
+          onPress={onPress}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.thumbnailIcon}>📹</Text>
+          <Text style={styles.thumbnailTitle}>
+            {configured
+              ? "Start Live Preview"
+              : "Camera ID Not Assigned"}
+          </Text>
+          <Text style={styles.thumbnailSubtitle}>
+            {configured
+              ? "Tap here to replace this placeholder with the live camera"
+              : "Open settings and enter the phone camera ID"}
+          </Text>
+
+          <View
+            style={[
+              styles.aiIndicator,
+              { backgroundColor: colors.secondary },
+            ]}
+          >
+            <Text style={styles.aiText}>🤖 AI</Text>
+          </View>
+        </TouchableOpacity>
+      )}
+
+      <View style={styles.cameraInfo}>
+        <Text
+          numberOfLines={1}
+          style={[
+            styles.cameraName,
+            { color: colors.text },
+          ]}
+        >
+          {camera.name || `Camera ${camera.id}`}
+        </Text>
+
+        <Text
+          selectable
+          numberOfLines={1}
+          style={[
+            styles.cameraReference,
+            { color: colors.textSecondary },
+          ]}
+        >
+          Camera ID: {cameraReferenceId}
+        </Text>
+
+        <Text
+          numberOfLines={1}
+          style={[
+            styles.cameraLocation,
+            { color: colors.textSecondary },
+          ]}
+        >
+          {camera.shop?.name || "Unknown Location"}
+        </Text>
+      </View>
+
+      <View style={styles.quickActions}>
+        <TouchableOpacity
+          style={[
+            styles.quickActionButton,
+            { backgroundColor: colors.background },
+          ]}
+          onPress={(event) => {
+            event.stopPropagation();
+            onAudioPress();
+          }}
+        >
+          <Text style={styles.quickActionIcon}>🎤</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[
+            styles.quickActionButton,
+            { backgroundColor: colors.background },
+          ]}
+          onPress={(event) => {
+            event.stopPropagation();
+            onExpandPreview();
+          }}
+          accessibilityRole="button"
+          accessibilityLabel="Open expanded camera preview"
+        >
+          <Text style={styles.quickActionIcon}>⛶</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[
+            styles.quickActionButton,
+            { backgroundColor: colors.background },
+          ]}
+          onPress={(event) => {
+            event.stopPropagation();
+            onSettingsPress();
+          }}
+        >
+          <Text style={styles.quickActionIcon}>⚙️</Text>
+        </TouchableOpacity>
+      </View>
+
+      <View style={styles.featuresBar}>
+        <FeatureBadge
+          icon="👤"
+          label="Person"
+          active
+        />
+        <FeatureBadge
+          icon="🚗"
+          label="Vehicle"
+          active={false}
+        />
+        <FeatureBadge
+          icon="📦"
+          label="Package"
+          active
+        />
+      </View>
+    </View>
+  );
+}
+
+function FeatureBadge({
+  icon,
+  label,
+  active,
+}: {
+  icon: string;
+  label: string;
+  active: boolean;
+}) {
+  return (
+    <View
+      style={[
+        styles.featureBadge,
+        { opacity: active ? 1 : 0.4 },
+      ]}
+    >
+      <Text style={styles.featureBadgeIcon}>{icon}</Text>
+      <Text style={styles.featureBadgeText}>
+        {label}
+      </Text>
+    </View>
+  );
+}
+
+function AIFeaturesGrid({
+  colors,
+}: {
+  colors: ThemeColors;
+}) {
+  const features = [
+    {
+      icon: "👤",
+      name: "Person Detection",
+      status: "Active",
+      color: colors.success,
+    },
+    {
+      icon: "🚗",
+      name: "Vehicle Detection",
+      status: "Active",
+      color: colors.primary,
+    },
+    {
+      icon: "😊",
+      name: "Face Recognition",
+      status: "Pro",
+      color: colors.warning,
+    },
+    {
+      icon: "🔢",
+      name: "License Plate",
+      status: "Pro",
+      color: colors.secondary,
+    },
+    {
+      icon: "📦",
+      name: "Package Detection",
+      status: "Active",
+      color: colors.success,
+    },
+    {
+      icon: "👥",
+      name: "Crowd Analysis",
+      status: "Enterprise",
+      color: colors.error,
+    },
+  ];
+
+  return (
+    <View style={styles.aiGrid}>
+      {features.map((feature) => (
+        <View
+          key={feature.name}
+          style={[
+            styles.aiCard,
+            { backgroundColor: colors.surface },
+          ]}
+        >
+          <Text style={styles.aiCardIcon}>
+            {feature.icon}
+          </Text>
+          <Text
+            style={[
+              styles.aiCardName,
+              { color: colors.text },
+            ]}
+          >
+            {feature.name}
+          </Text>
+          <View
+            style={[
+              styles.aiCardBadge,
+              {
+                backgroundColor: `${feature.color}20`,
+              },
+            ]}
+          >
+            <Text
+              style={[
+                styles.aiCardStatus,
+                { color: feature.color },
+              ]}
+            >
+              {feature.status}
+            </Text>
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function EmptyState({
+  colors,
+  onAddCamera,
+}: {
+  colors: ThemeColors;
+  onAddCamera: () => void;
+}) {
+  return (
+    <View
+      style={[
+        styles.emptyState,
+        { backgroundColor: colors.surface },
+      ]}
+    >
+      <Text style={styles.emptyIcon}>📹</Text>
+      <Text
+        style={[
+          styles.emptyTitle,
+          { color: colors.text },
+        ]}
+      >
+        No Cameras Yet
+      </Text>
+      <Text
+        style={[
+          styles.emptyText,
+          { color: colors.textSecondary },
+        ]}
+      >
+        Add a camera name and smartphone camera ID to start monitoring.
+      </Text>
+      <TouchableOpacity
+        style={[
+          styles.emptyButton,
+          { backgroundColor: colors.primary },
+        ]}
+        onPress={onAddCamera}
+      >
+        <Text style={styles.emptyButtonText}>
+          + Add Camera
+        </Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+function HiddenCamerasState({
+  colors,
+  hiddenCount,
+  onRestore,
+}: {
+  colors: ThemeColors;
+  hiddenCount: number;
+  onRestore: () => void;
+}) {
+  return (
+    <View
+      style={[
+        styles.emptyState,
+        { backgroundColor: colors.surface },
+      ]}
+    >
+      <Text style={styles.emptyIcon}>🙈</Text>
+      <Text
+        style={[
+          styles.emptyTitle,
+          { color: colors.text },
+        ]}
+      >
+        All Camera Cards Are Hidden
+      </Text>
+      <Text
+        style={[
+          styles.emptyText,
+          { color: colors.textSecondary },
+        ]}
+      >
+        {hiddenCount} camera card
+        {hiddenCount === 1 ? " is" : "s are"} hidden.
+      </Text>
+      <TouchableOpacity
+        style={[
+          styles.emptyButton,
+          { backgroundColor: colors.warning },
+        ]}
+        onPress={onRestore}
+      >
+        <Text style={styles.emptyButtonText}>
+          Restore Hidden Cameras
+        </Text>
+      </TouchableOpacity>
+    </View>
+  );
+}

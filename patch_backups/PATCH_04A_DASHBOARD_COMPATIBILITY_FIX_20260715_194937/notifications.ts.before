@@ -1,0 +1,130 @@
+// services/notifications.ts
+import { NOTIFICATION_CHANNELS, STORAGE_KEYS } from "@/constants/config";
+import Constants from "expo-constants";
+import * as Device from "expo-device";
+import * as Notifications from "expo-notifications";
+import * as SecureStore from "expo-secure-store";
+import { Platform } from "react-native";
+import { api } from "./api";
+
+// Configure how notifications are handled when app is in foreground
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: true,
+    shouldShowBanner: true,
+    shouldShowList: true,
+  }),
+});
+
+export class NotificationService {
+  static async registerForPushNotifications(): Promise<string | undefined> {
+    let token;
+
+    if (Platform.OS === "android") {
+      await Notifications.setNotificationChannelAsync(
+        NOTIFICATION_CHANNELS.MOTION_ALERTS,
+        {
+          name: "Motion Alerts",
+          importance: Notifications.AndroidImportance.MAX,
+          vibrationPattern: [0, 250, 250, 250],
+          lightColor: "#FF231F7C",
+          sound: "default",
+        },
+      );
+    }
+
+    if (Device.isDevice) {
+      const { status: existingStatus } =
+        await Notifications.getPermissionsAsync();
+      let finalStatus = existingStatus;
+
+      if (existingStatus !== "granted") {
+        const { status } = await Notifications.requestPermissionsAsync();
+        finalStatus = status;
+      }
+
+      if (finalStatus !== "granted") {
+        alert("Failed to get push notification permissions!");
+        return;
+      }
+
+      try {
+        const projectId = Constants.expoConfig?.extra?.eas?.projectId;
+        token = (
+          await Notifications.getExpoPushTokenAsync({
+            projectId: projectId,
+          })
+        ).data;
+
+        console.log("Expo Push Token:", token);
+        await SecureStore.setItemAsync(STORAGE_KEYS.EXPO_PUSH_TOKEN, token);
+
+        try {
+          await api.savePushToken(token);
+        } catch (error) {
+          console.error("Failed to save push token to backend:", error);
+        }
+      } catch (error) {
+        console.error("Error getting push token:", error);
+      }
+    } else {
+      alert("Must use physical device for Push Notifications");
+    }
+
+    return token;
+  }
+
+  static async scheduleLocalNotification(
+    title: string,
+    body: string,
+    data?: any,
+  ): Promise<string> {
+    const id = await Notifications.scheduleNotificationAsync({
+      content: {
+        title,
+        body,
+        data,
+        sound: "default",
+      },
+      trigger: null,
+    });
+
+    return id;
+  }
+
+  static async cancelAllNotifications(): Promise<void> {
+    await Notifications.cancelAllScheduledNotificationsAsync();
+  }
+
+  static async getBadgeCount(): Promise<number> {
+    return await Notifications.getBadgeCountAsync();
+  }
+
+  static async setBadgeCount(count: number): Promise<void> {
+    await Notifications.setBadgeCountAsync(count);
+  }
+
+  static async clearAllNotifications(): Promise<void> {
+    await Notifications.dismissAllNotificationsAsync();
+  }
+
+  static addNotificationReceivedListener(
+    callback: (notification: Notifications.Notification) => void,
+  ) {
+    return Notifications.addNotificationReceivedListener(callback);
+  }
+
+  static addNotificationResponseReceivedListener(
+    callback: (response: Notifications.NotificationResponse) => void,
+  ) {
+    return Notifications.addNotificationResponseReceivedListener(callback);
+  }
+
+  static async getLastNotificationResponse() {
+    return await Notifications.getLastNotificationResponseAsync();
+  }
+}
+
+export default NotificationService;

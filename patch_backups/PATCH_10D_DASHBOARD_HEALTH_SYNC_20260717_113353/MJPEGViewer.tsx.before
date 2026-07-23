@@ -1,0 +1,668 @@
+import React, {
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+
+import {
+  Image,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from "react-native";
+
+import {
+  io,
+  Socket,
+} from "socket.io-client";
+
+import {
+  getDashboardSocketAuth,
+} from "@/services/security/dashboardSecurity";
+
+interface MJPEGViewerProps {
+  cameraId: string;
+  serverUrl: string;
+}
+
+interface CameraFramePayload {
+  cameraId?: string;
+  frame?: string;
+  source?: "preview" | "snapshot";
+}
+
+interface CameraHealthPayload {
+  cameraId?: string;
+  connected?: boolean;
+  signalStatus?: string;
+  isRecording?: boolean;
+  previewActive?: boolean;
+  viewerCount?: number;
+  previewViewerCount?: number;
+  frameCount?: number;
+  lastHeartbeatAt?: number | null;
+  health?: {
+    captureMode?: string;
+    cameraReady?: boolean;
+    pendingUploads?: number;
+    retryingUploads?: number;
+    uploadedSegments?: number;
+    recordedSegments?: number;
+    fps?: number;
+  } | null;
+}
+
+function normalizeCameraId(value: unknown): string {
+  return String(value || "")
+    .replace(/^smartphone:/i, "")
+    .trim()
+    .toLowerCase();
+}
+
+function createImageUri(frame: string): string {
+  const cleaned = frame.trim();
+
+  return cleaned.startsWith("data:image/")
+    ? cleaned
+    : `data:image/jpeg;base64,${cleaned}`;
+}
+
+export default function MJPEGViewer({
+  cameraId,
+  serverUrl,
+}: MJPEGViewerProps) {
+  const socketRef = useRef<Socket | null>(null);
+
+  const viewerIdRef = useRef(
+    `viewer-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 8)}`,
+  );
+
+  const [frameUri, setFrameUri] =
+    useState<string | null>(null);
+
+  const [isConnected, setIsConnected] =
+    useState(false);
+
+  const [previewRequested, setPreviewRequested] =
+    useState(false);
+
+  const [snapshotPending, setSnapshotPending] =
+    useState(false);
+
+  const [statusText, setStatusText] =
+    useState("Connecting");
+
+  const [health, setHealth] =
+    useState<CameraHealthPayload | null>(null);
+
+  const [imageError, setImageError] =
+    useState<string | null>(null);
+
+  useEffect(() => {
+    const expectedCameraId =
+      normalizeCameraId(cameraId);
+
+    const client = io(serverUrl, {
+      auth: getDashboardSocketAuth(),
+      transports: ["websocket"],
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      timeout: 10_000,
+    });
+
+    socketRef.current = client;
+
+    const handleConnect = () => {
+      setIsConnected(true);
+      setStatusText(
+        "Camera ready — choose Snapshot or Live Preview",
+      );
+
+      client.emit("viewer:watch", {
+        cameraId,
+        viewerId: viewerIdRef.current,
+      });
+    };
+
+    const handleDisconnect = () => {
+      setIsConnected(false);
+      setPreviewRequested(false);
+      setSnapshotPending(false);
+      setStatusText(
+        "Disconnected from CCTV server",
+      );
+    };
+
+    const handleFrame = (
+      payload: CameraFramePayload,
+    ) => {
+      if (
+        typeof payload.frame !== "string" ||
+        (
+          payload.cameraId &&
+          normalizeCameraId(payload.cameraId) !==
+            expectedCameraId
+        )
+      ) {
+        return;
+      }
+
+      setFrameUri(
+        createImageUri(payload.frame),
+      );
+      setImageError(null);
+
+      if (payload.source === "snapshot") {
+        setSnapshotPending(false);
+        setStatusText("Snapshot captured");
+      } else {
+        setStatusText("Live JPEG preview active");
+      }
+    };
+
+    const handleStatus = (payload: {
+      cameraId?: string;
+      status?: string;
+    }) => {
+      if (
+        normalizeCameraId(payload.cameraId) !==
+        expectedCameraId
+      ) {
+        return;
+      }
+
+      switch (payload.status) {
+        case "waiting":
+          setStatusText(
+            "Waiting for the first JPEG frame",
+          );
+          break;
+        case "idle":
+          setStatusText(
+            "Camera idle — JPEG capture is off",
+          );
+          break;
+        case "recording":
+          setStatusText(
+            "MP4 recording active — JPEG unavailable",
+          );
+          break;
+        case "offline":
+          setPreviewRequested(false);
+          setStatusText("Camera offline");
+          break;
+        default:
+          break;
+      }
+    };
+
+    const handleHealth = (
+      payload: CameraHealthPayload,
+    ) => {
+      if (
+        normalizeCameraId(payload.cameraId) ===
+        expectedCameraId
+      ) {
+        setHealth(payload);
+      }
+    };
+
+    const handleSnapshotError = (payload: {
+      cameraId?: string;
+      error?: string;
+    }) => {
+      if (
+        normalizeCameraId(payload.cameraId) !==
+        expectedCameraId
+      ) {
+        return;
+      }
+
+      setSnapshotPending(false);
+      setStatusText(
+        payload.error || "Snapshot failed",
+      );
+    };
+
+    client.on("connect", handleConnect);
+    client.on("disconnect", handleDisconnect);
+    client.on("camera:frame", handleFrame);
+    client.on("camera:status", handleStatus);
+    client.on("camera:health", handleHealth);
+    client.on(
+      "camera:snapshot:error",
+      handleSnapshotError,
+    );
+
+    return () => {
+      if (client.connected) {
+        client.emit(
+          "viewer:preview:stop",
+          { cameraId },
+        );
+
+        client.emit("viewer:unwatch", {
+          viewerId: viewerIdRef.current,
+        });
+      }
+
+      client.removeAllListeners();
+      client.disconnect();
+      socketRef.current = null;
+    };
+  }, [cameraId, serverUrl]);
+
+  const startPreview = () => {
+    const client = socketRef.current;
+
+    if (!client?.connected) {
+      setStatusText("Server disconnected");
+      return;
+    }
+
+    setPreviewRequested(true);
+    setStatusText("Starting JPEG preview…");
+
+    client.emit(
+      "viewer:preview:start",
+      { cameraId },
+      (response: {
+        ok?: boolean;
+        error?: string;
+      }) => {
+        if (!response?.ok) {
+          setPreviewRequested(false);
+          setStatusText(
+            response?.error ||
+              "Preview request failed",
+          );
+        }
+      },
+    );
+  };
+
+  const stopPreview = () => {
+    setPreviewRequested(false);
+    setStatusText(
+      "Camera idle — JPEG capture is off",
+    );
+
+    socketRef.current?.emit(
+      "viewer:preview:stop",
+      { cameraId },
+    );
+  };
+
+  const takeSnapshot = () => {
+    const client = socketRef.current;
+
+    if (!client?.connected) {
+      setStatusText("Server disconnected");
+      return;
+    }
+
+    setSnapshotPending(true);
+    setStatusText("Requesting one snapshot…");
+
+    client.emit(
+      "viewer:snapshot",
+      {
+        cameraId,
+        requestId: `snapshot-${Date.now()}`,
+      },
+      (response: {
+        ok?: boolean;
+        error?: string;
+      }) => {
+        if (!response?.ok) {
+          setSnapshotPending(false);
+          setStatusText(
+            response?.error ||
+              "Snapshot request failed",
+          );
+        }
+      },
+    );
+  };
+
+  const phoneHealth = health?.health;
+
+  return (
+    <View style={styles.container}>
+      <View style={styles.imageArea}>
+        {frameUri ? (
+          <Image
+            source={{ uri: frameUri }}
+            style={styles.image}
+            resizeMode="contain"
+            fadeDuration={0}
+            onError={(event) => {
+              setImageError(
+                event.nativeEvent.error ||
+                  "Could not decode JPEG",
+              );
+            }}
+          />
+        ) : (
+          <View style={styles.placeholder}>
+            <Text style={styles.cameraIcon}>
+              📷
+            </Text>
+            <Text style={styles.placeholderTitle}>
+              JPEG capture is off
+            </Text>
+            <Text style={styles.placeholderText}>
+              Take one snapshot, or temporarily start
+              live JPEG preview.
+            </Text>
+          </View>
+        )}
+
+        {imageError && (
+          <View style={styles.errorOverlay}>
+            <Text style={styles.errorText}>
+              {imageError}
+            </Text>
+          </View>
+        )}
+
+        {previewRequested && (
+          <View style={styles.liveBadge}>
+            <Text style={styles.liveBadgeText}>
+              LIVE JPEG
+            </Text>
+          </View>
+        )}
+      </View>
+
+      <View style={styles.buttons}>
+        <TouchableOpacity
+          style={[
+            styles.button,
+            styles.snapshotButton,
+            (
+              snapshotPending ||
+              health?.isRecording
+            ) && styles.disabledButton,
+          ]}
+          disabled={
+            snapshotPending ||
+            health?.isRecording
+          }
+          onPress={takeSnapshot}
+        >
+          <Text style={styles.buttonText}>
+            {snapshotPending
+              ? "Capturing…"
+              : "📷 Snapshot"}
+          </Text>
+        </TouchableOpacity>
+
+        {!previewRequested ? (
+          <TouchableOpacity
+            style={[
+              styles.button,
+              styles.previewButton,
+              health?.isRecording &&
+                styles.disabledButton,
+            ]}
+            disabled={health?.isRecording}
+            onPress={startPreview}
+          >
+            <Text style={styles.buttonText}>
+              ▶ Live Preview
+            </Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity
+            style={[
+              styles.button,
+              styles.stopButton,
+            ]}
+            onPress={stopPreview}
+          >
+            <Text style={styles.buttonText}>
+              ■ Stop Preview
+            </Text>
+          </TouchableOpacity>
+        )}
+      </View>
+
+      <View style={styles.healthPanel}>
+        <Text style={styles.statusText}>
+          {statusText}
+        </Text>
+
+        <View style={styles.healthRow}>
+          <HealthItem
+            label="Phone"
+            value={
+              health?.connected
+                ? "Online"
+                : isConnected
+                  ? "Waiting"
+                  : "Offline"
+            }
+          />
+          <HealthItem
+            label="Mode"
+            value={
+              health?.isRecording
+                ? "Recording"
+                : previewRequested
+                  ? "Preview"
+                  : "Idle"
+            }
+          />
+          <HealthItem
+            label="Camera"
+            value={
+              phoneHealth?.cameraReady
+                ? "Ready"
+                : "Starting"
+            }
+          />
+          <HealthItem
+            label="Pending"
+            value={String(
+              phoneHealth?.pendingUploads || 0,
+            )}
+          />
+          <HealthItem
+            label="Retrying"
+            value={String(
+              phoneHealth?.retryingUploads || 0,
+            )}
+          />
+        </View>
+      </View>
+    </View>
+  );
+}
+
+function HealthItem({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
+  return (
+    <View style={styles.healthItem}>
+      <Text style={styles.healthLabel}>
+        {label}
+      </Text>
+      <Text
+        numberOfLines={1}
+        style={styles.healthValue}
+      >
+        {value}
+      </Text>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    width: "100%",
+    minHeight: 300,
+    backgroundColor: "#020617",
+  },
+
+  imageArea: {
+    flex: 1,
+    minHeight: 220,
+    position: "relative",
+    overflow: "hidden",
+    backgroundColor: "#000000",
+  },
+
+  image: {
+    ...StyleSheet.absoluteFillObject,
+    width: "100%",
+    height: "100%",
+    backgroundColor: "#000000",
+  },
+
+  placeholder: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 22,
+  },
+
+  cameraIcon: {
+    fontSize: 40,
+  },
+
+  placeholderTitle: {
+    color: "#FFFFFF",
+    fontSize: 16,
+    fontWeight: "800",
+    marginTop: 10,
+  },
+
+  placeholderText: {
+    color: "#94A3B8",
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 6,
+    textAlign: "center",
+  },
+
+  liveBadge: {
+    position: "absolute",
+    top: 12,
+    left: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: "#059669",
+  },
+
+  liveBadgeText: {
+    color: "#FFFFFF",
+    fontSize: 10,
+    fontWeight: "900",
+  },
+
+  errorOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 20,
+    backgroundColor: "rgba(0,0,0,0.86)",
+  },
+
+  errorText: {
+    color: "#FCA5A5",
+    fontSize: 13,
+    textAlign: "center",
+  },
+
+  buttons: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    padding: 10,
+    backgroundColor: "#0F172A",
+  },
+
+  button: {
+    flex: 1,
+    minWidth: 130,
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+
+  snapshotButton: {
+    backgroundColor: "#2563EB",
+  },
+
+  previewButton: {
+    backgroundColor: "#059669",
+  },
+
+  stopButton: {
+    backgroundColor: "#DC2626",
+  },
+
+  disabledButton: {
+    opacity: 0.42,
+  },
+
+  buttonText: {
+    color: "#FFFFFF",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+
+  healthPanel: {
+    paddingHorizontal: 10,
+    paddingBottom: 10,
+    backgroundColor: "#0F172A",
+  },
+
+  statusText: {
+    color: "#CBD5E1",
+    fontSize: 11,
+    marginBottom: 8,
+  },
+
+  healthRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+
+  healthItem: {
+    flex: 1,
+    minWidth: 70,
+    paddingHorizontal: 8,
+    paddingVertical: 7,
+    borderRadius: 7,
+    backgroundColor: "#1E293B",
+  },
+
+  healthLabel: {
+    color: "#94A3B8",
+    fontSize: 8,
+    fontWeight: "800",
+    textTransform: "uppercase",
+  },
+
+  healthValue: {
+    color: "#FFFFFF",
+    fontSize: 10,
+    fontWeight: "800",
+    marginTop: 3,
+  },
+});

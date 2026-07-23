@@ -1,0 +1,490 @@
+"use strict";
+
+const fs = require("fs");
+const fsp = require("fs/promises");
+const os = require("os");
+const path = require("path");
+
+const STORAGE_TYPES = new Set([
+  "LOCAL",
+  "EXTERNAL_DRIVE",
+  "NAS",
+  "NVR_MOUNT",
+]);
+
+const VIRTUAL_LINUX_FILESYSTEMS = new Set([
+  "autofs",
+  "bpf",
+  "cgroup",
+  "cgroup2",
+  "configfs",
+  "debugfs",
+  "devpts",
+  "devtmpfs",
+  "efivarfs",
+  "fusectl",
+  "hugetlbfs",
+  "mqueue",
+  "overlay",
+  "proc",
+  "pstore",
+  "securityfs",
+  "squashfs",
+  "sysfs",
+  "tmpfs",
+  "tracefs",
+]);
+
+function normalizeStorageType(value) {
+  const normalized = String(value || "LOCAL")
+    .trim()
+    .toUpperCase();
+
+  return STORAGE_TYPES.has(normalized)
+    ? normalized
+    : "LOCAL";
+}
+
+function normalizeRootPath(value) {
+  const rawValue = String(value || "").trim();
+
+  if (!rawValue) {
+    throw new Error("Storage root path is required");
+  }
+
+  if (!path.isAbsolute(rawValue)) {
+    throw new Error("Storage root path must be an absolute path");
+  }
+
+  return path.resolve(rawValue);
+}
+
+function isPathInside(rootPath, candidatePath) {
+  const resolvedRoot = path.resolve(rootPath);
+  const resolvedCandidate = path.resolve(candidatePath);
+
+  return (
+    resolvedCandidate === resolvedRoot ||
+    resolvedCandidate.startsWith(`${resolvedRoot}${path.sep}`)
+  );
+}
+
+function bigintToNumber(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  return Number(value);
+}
+
+function serializeStorageTarget(target) {
+  if (!target) {
+    return null;
+  }
+
+  return {
+    id: target.id,
+    name: target.name,
+    type: target.type,
+    rootPath: target.rootPath,
+    isDefault: target.isDefault,
+    isEnabled: target.isEnabled,
+    status: target.status,
+    totalBytes: bigintToNumber(target.totalBytes),
+    availableBytes: bigintToNumber(target.availableBytes),
+    usedBytes:
+      target.totalBytes !== null &&
+      target.totalBytes !== undefined &&
+      target.availableBytes !== null &&
+      target.availableBytes !== undefined
+        ? Number(target.totalBytes - target.availableBytes)
+        : null,
+    lastHealthCheckAt:
+      target.lastHealthCheckAt?.toISOString?.() || null,
+    lastError: target.lastError,
+    createdAt: target.createdAt?.toISOString?.() || null,
+    updatedAt: target.updatedAt?.toISOString?.() || null,
+  };
+}
+
+async function inspectRootPath(rootPath, options = {}) {
+  const {
+    createIfMissing = true,
+    performWriteTest = true,
+  } = options;
+
+  const normalizedRoot = normalizeRootPath(rootPath);
+
+  if (createIfMissing) {
+    await fsp.mkdir(normalizedRoot, {
+      recursive: true,
+    });
+  }
+
+  const rootStat = await fsp.stat(normalizedRoot);
+
+  if (!rootStat.isDirectory()) {
+    throw new Error("Storage root path is not a directory");
+  }
+
+  if (performWriteTest) {
+    const testFile = path.join(
+      normalizedRoot,
+      `.cctv-write-test-${process.pid}-${Date.now()}-${Math.random()
+        .toString(36)
+        .slice(2, 8)}`,
+    );
+
+    try {
+      await fsp.writeFile(testFile, "cctv-storage-test", {
+        flag: "wx",
+      });
+    } finally {
+      await fsp.rm(testFile, { force: true }).catch(
+        () => undefined,
+      );
+    }
+  }
+
+  let totalBytes = null;
+  let availableBytes = null;
+
+  if (typeof fsp.statfs === "function") {
+    const filesystem = await fsp.statfs(normalizedRoot, {
+      bigint: true,
+    });
+
+    const blockSize =
+      filesystem.bsize || filesystem.frsize || 0n;
+
+    totalBytes = filesystem.blocks * blockSize;
+    availableBytes = filesystem.bavail * blockSize;
+  }
+
+  return {
+    rootPath: normalizedRoot,
+    status: "AVAILABLE",
+    totalBytes,
+    availableBytes,
+    checkedAt: new Date(),
+  };
+}
+
+function decodeLinuxMountPath(value) {
+  return String(value || "")
+    .replace(/\\040/g, " ")
+    .replace(/\\011/g, "\t")
+    .replace(/\\012/g, "\n")
+    .replace(/\\134/g, "\\");
+}
+
+async function readLinuxMountCandidates() {
+  if (process.platform !== "linux") {
+    return [];
+  }
+
+  let content = "";
+
+  try {
+    content = await fsp.readFile("/proc/self/mounts", "utf8");
+  } catch (_error) {
+    return [];
+  }
+
+  const candidates = [];
+
+  for (const line of content.split("\n")) {
+    if (!line.trim()) {
+      continue;
+    }
+
+    const parts = line.split(" ");
+
+    if (parts.length < 3) {
+      continue;
+    }
+
+    const mountPath = decodeLinuxMountPath(parts[1]);
+    const filesystemType = parts[2];
+
+    if (
+      !path.isAbsolute(mountPath) ||
+      VIRTUAL_LINUX_FILESYSTEMS.has(filesystemType)
+    ) {
+      continue;
+    }
+
+    const usefulMount =
+      mountPath === "/" ||
+      mountPath.startsWith("/media/") ||
+      mountPath.startsWith("/run/media/") ||
+      mountPath.startsWith("/mnt/");
+
+    if (!usefulMount) {
+      continue;
+    }
+
+    candidates.push({
+      rootPath: path.resolve(mountPath),
+      filesystemType,
+      source: "linux-mount",
+    });
+  }
+
+  return candidates;
+}
+
+function createStorageManager({ prisma, legacyRoot }) {
+  const normalizedLegacyRoot = path.resolve(legacyRoot);
+
+  async function ensureDefaultStorageTarget() {
+    let target = await prisma.storageTarget.findFirst({
+      where: {
+        isDefault: true,
+        isEnabled: true,
+      },
+      orderBy: {
+        updatedAt: "desc",
+      },
+    });
+
+    if (!target) {
+      target = await prisma.storageTarget.upsert({
+        where: {
+          rootPath: normalizedLegacyRoot,
+        },
+        update: {
+          name: "Local Recordings",
+          type: "LOCAL",
+          isEnabled: true,
+          isDefault: true,
+        },
+        create: {
+          name: "Local Recordings",
+          type: "LOCAL",
+          rootPath: normalizedLegacyRoot,
+          isEnabled: true,
+          isDefault: true,
+        },
+      });
+    }
+
+    await prisma.storageTarget.updateMany({
+      where: {
+        id: {
+          not: target.id,
+        },
+        isDefault: true,
+      },
+      data: {
+        isDefault: false,
+      },
+    });
+
+    return refreshTargetHealth(target.id);
+  }
+
+  async function refreshTargetHealth(targetId) {
+    const target = await prisma.storageTarget.findUnique({
+      where: {
+        id: targetId,
+      },
+    });
+
+    if (!target) {
+      throw new Error("Storage target not found");
+    }
+
+    try {
+      const health = await inspectRootPath(target.rootPath, {
+        createIfMissing: true,
+        performWriteTest: true,
+      });
+
+      return prisma.storageTarget.update({
+        where: {
+          id: target.id,
+        },
+        data: {
+          rootPath: health.rootPath,
+          status: health.status,
+          totalBytes: health.totalBytes,
+          availableBytes: health.availableBytes,
+          lastHealthCheckAt: health.checkedAt,
+          lastError: null,
+        },
+      });
+    } catch (error) {
+      return prisma.storageTarget.update({
+        where: {
+          id: target.id,
+        },
+        data: {
+          status: "UNAVAILABLE",
+          lastHealthCheckAt: new Date(),
+          lastError: error.message,
+        },
+      });
+    }
+  }
+
+  async function resolveStorageTarget(requestedTargetId) {
+    const requestedId = String(requestedTargetId || "").trim();
+
+    const target = requestedId
+      ? await prisma.storageTarget.findUnique({
+          where: {
+            id: requestedId,
+          },
+        })
+      : await ensureDefaultStorageTarget();
+
+    if (!target) {
+      throw new Error("Requested storage target was not found");
+    }
+
+    if (!target.isEnabled) {
+      throw new Error("Requested storage target is disabled");
+    }
+
+    const checkedTarget = await refreshTargetHealth(target.id);
+
+    if (checkedTarget.status !== "AVAILABLE") {
+      throw new Error(
+        checkedTarget.lastError ||
+          "Requested storage target is unavailable",
+      );
+    }
+
+    return {
+      ...checkedTarget,
+      rootPath: path.resolve(checkedTarget.rootPath),
+    };
+  }
+
+  async function resolveRecordingPath(recording) {
+    let rootPath = normalizedLegacyRoot;
+
+    if (recording.storageTargetId) {
+      const target = await prisma.storageTarget.findUnique({
+        where: {
+          id: recording.storageTargetId,
+        },
+      });
+
+      if (!target) {
+        throw new Error(
+          "The recording storage target no longer exists",
+        );
+      }
+
+      rootPath = path.resolve(target.rootPath);
+    }
+
+    const absolutePath = path.resolve(
+      rootPath,
+      recording.relativeFilePath,
+    );
+
+    if (!isPathInside(rootPath, absolutePath)) {
+      throw new Error("Invalid recording path");
+    }
+
+    return {
+      rootPath,
+      absolutePath,
+    };
+  }
+
+  async function listStorageCandidates() {
+    const defaultCandidates = [
+      {
+        rootPath: normalizedLegacyRoot,
+        filesystemType: null,
+        source: "current-recordings-root",
+      },
+      {
+        rootPath: path.join(os.homedir(), "CCTV_Recordings"),
+        filesystemType: null,
+        source: "home-suggestion",
+      },
+    ];
+
+    const mountedCandidates = await readLinuxMountCandidates();
+    const unique = new Map();
+
+    for (const candidate of [
+      ...defaultCandidates,
+      ...mountedCandidates,
+    ]) {
+      const rootPath = path.resolve(candidate.rootPath);
+
+      if (!unique.has(rootPath)) {
+        unique.set(rootPath, {
+          ...candidate,
+          rootPath,
+        });
+      }
+    }
+
+    const results = [];
+
+    for (const candidate of unique.values()) {
+      try {
+        const health = await inspectRootPath(candidate.rootPath, {
+          createIfMissing:
+            candidate.source !== "linux-mount",
+          performWriteTest: false,
+        });
+
+        let writable = true;
+
+        try {
+          await fsp.access(candidate.rootPath, fs.constants.W_OK);
+        } catch (_error) {
+          writable = false;
+        }
+
+        results.push({
+          ...candidate,
+          status: "AVAILABLE",
+          writable,
+          totalBytes: bigintToNumber(health.totalBytes),
+          availableBytes: bigintToNumber(
+            health.availableBytes,
+          ),
+        });
+      } catch (error) {
+        results.push({
+          ...candidate,
+          status: "UNAVAILABLE",
+          writable: false,
+          totalBytes: null,
+          availableBytes: null,
+          error: error.message,
+        });
+      }
+    }
+
+    return results;
+  }
+
+  return {
+    ensureDefaultStorageTarget,
+    inspectRootPath,
+    listStorageCandidates,
+    normalizeRootPath,
+    normalizeStorageType,
+    refreshTargetHealth,
+    resolveRecordingPath,
+    resolveStorageTarget,
+    serializeStorageTarget,
+  };
+}
+
+module.exports = {
+  createStorageManager,
+  normalizeRootPath,
+  normalizeStorageType,
+  serializeStorageTarget,
+};

@@ -1,0 +1,1233 @@
+import React, {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+
+import {
+  AppState,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from "react-native";
+
+import {
+  CameraView,
+  useCameraPermissions,
+} from "expo-camera";
+
+import {
+  manipulateAsync,
+  SaveFormat,
+} from "expo-image-manipulator";
+
+import {
+  io,
+  Socket,
+} from "socket.io-client";
+
+import {
+  getCameraSecurityFingerprint,
+  getCameraSocketAuth,
+} from "@/services/security/cameraSecurity";
+
+import {
+  buildRecordingFileName,
+  RECORDING_SEGMENT_SECONDS,
+  RECORDING_VIDEO_QUALITY,
+  RECORDING_WITH_AUDIO,
+} from "./recording/recordingConfig";
+
+import {
+  enqueueRecordingUpload,
+  resumeRecordingUploadQueue,
+  subscribeRecordingUploadQueue,
+} from "./recording/recordingUploadQueue";
+
+interface SimpleCameraStreamProps {
+  cameraId: string;
+  serverUrl: string;
+}
+
+type CaptureMode = "live" | "recording";
+
+const CAPTURE_INTERVAL_MS = 1000;
+const FRAME_WIDTH = 640;
+const JPEG_COMPRESSION = 0.3;
+
+const RECORDING_CAMERA_WARMUP_MS = 900;
+const MIN_RECORDING_DATA_MS = 5_000;
+const RECORDING_STOP_REASON_USER = "user requested stop";
+// PATCH_08B_ADAPTIVE_RECORDING_START_GUARD
+// PATCH_08C_DEVICE_SAFE_MIN_RECORDING
+// PATCH_09_ON_DEMAND_SNAPSHOT_HEALTH
+// PATCH_10_SECURE_LAN_PROVISIONING
+// PATCH_10A_CAMERA_CREDENTIAL_RESYNC
+export default function SimpleCameraStream({
+  cameraId,
+  serverUrl,
+}: SimpleCameraStreamProps) {
+  const [permission, requestPermission] =
+    useCameraPermissions();
+
+  const [isConnected, setIsConnected] =
+    useState(false);
+
+  const [isCameraReady, setIsCameraReady] =
+    useState(false);
+
+  const [frameCount, setFrameCount] =
+    useState(0);
+
+  const [fps, setFps] =
+    useState(0);
+
+  const [connectionMessage, setConnectionMessage] =
+    useState("Connecting");
+
+  const [captureMode, setCaptureMode] =
+    useState<CaptureMode>("live");
+
+  const [previewRequested, setPreviewRequested] =
+    useState(false);
+
+  const [recordingMessage, setRecordingMessage] =
+    useState("MP4 recording is stopped");
+
+  const [recordedSegmentCount, setRecordedSegmentCount] =
+    useState(0);
+
+  const [uploadedSegmentCount, setUploadedSegmentCount] =
+    useState(0);
+
+  const [pendingUploadCount, setPendingUploadCount] =
+    useState(0);
+
+  const [failedUploadCount, setFailedUploadCount] =
+    useState(0);
+
+  const cameraRef = useRef<any>(null);
+  const socketRef = useRef<Socket | null>(null);
+  const snapshotRequestIdRef =
+    useRef<string | null>(null);
+
+
+  const captureTimerRef =
+    useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const isCapturingRef = useRef(false);
+  const keepRecordingRef = useRef(false);
+  const recordingLoopRunningRef = useRef(false);
+  const nativeRecordingActiveRef = useRef(false);
+  const activeRecordingCameraRef = useRef<any>(null);
+  const recordingStartedAtRef = useRef<number | null>(null);
+  const pendingRecordingStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const componentMountedRef = useRef(true);
+
+  const totalFrameCountRef = useRef(0);
+  const fpsWindowFrameCountRef = useRef(0);
+  const fpsWindowStartedAtRef = useRef(Date.now());
+
+  const cameraMode =
+    captureMode === "recording" ? "video" : "picture";
+
+  /**
+   * Stop the native Expo recording exactly once.
+   *
+   * The active CameraView instance is captured when recordAsync starts.
+   * This prevents a delayed stop request from targeting the new picture-mode
+   * CameraView after the video CameraView has already been unmounted.
+   */
+  const performNativeRecordingStop = useCallback(
+    (reason: string): void => {
+      if (!nativeRecordingActiveRef.current) {
+        return;
+      }
+
+      const recordingCamera =
+        activeRecordingCameraRef.current;
+
+      nativeRecordingActiveRef.current = false;
+      activeRecordingCameraRef.current = null;
+      recordingStartedAtRef.current = null;
+
+      if (
+        pendingRecordingStopTimerRef.current !== null
+      ) {
+        clearTimeout(
+          pendingRecordingStopTimerRef.current,
+        );
+        pendingRecordingStopTimerRef.current = null;
+      }
+
+      if (!recordingCamera?.stopRecording) {
+        return;
+      }
+
+      console.log(
+        "⏹️ Native recording stop requested:",
+        reason,
+      );
+
+      try {
+        const result =
+          recordingCamera.stopRecording();
+
+        void Promise.resolve(result).catch(
+          (error: any) => {
+            const message =
+              error?.message || String(error);
+
+            if (
+              message.includes("Unable to find the class") ||
+              message.includes("view with tag") ||
+              message.includes(
+                "cannot be cast to type expo.modules.camera.ExpoCameraView",
+              )
+            ) {
+              console.warn(
+                "⚠️ Ignored stale CameraView stop request:",
+                message,
+              );
+              return;
+            }
+
+            console.error(
+              "❌ Native recording stop failed:",
+              message,
+            );
+          },
+        );
+      } catch (error: any) {
+        console.error(
+          "❌ Native recording stop failed:",
+          error?.message || String(error),
+        );
+      }
+    },
+    [],
+  );
+
+  const requestNativeRecordingStop = useCallback(
+    (reason: string): void => {
+      if (!nativeRecordingActiveRef.current) {
+        return;
+      }
+
+      const startedAt =
+        recordingStartedAtRef.current;
+
+      const elapsedMs =
+        startedAt === null
+          ? MIN_RECORDING_DATA_MS
+          : Date.now() - startedAt;
+
+      const remainingMs = Math.max(
+        0,
+        MIN_RECORDING_DATA_MS - elapsedMs,
+      );
+
+      const shouldDelay =
+        reason === RECORDING_STOP_REASON_USER &&
+        remainingMs > 0;
+
+      if (shouldDelay) {
+        if (
+          pendingRecordingStopTimerRef.current !==
+          null
+        ) {
+          return;
+        }
+
+        console.log(
+          `⏳ Recording stop delayed for ${remainingMs}ms so valid MP4 data can be produced`,
+        );
+
+        setRecordingMessage(
+          "Finishing the first video frames. This phone needs about 5 seconds before a valid MP4 can stop…",
+        );
+
+        pendingRecordingStopTimerRef.current =
+          setTimeout(() => {
+            pendingRecordingStopTimerRef.current =
+              null;
+
+            performNativeRecordingStop(reason);
+          }, remainingMs);
+
+        return;
+      }
+
+      performNativeRecordingStop(reason);
+    },
+    [performNativeRecordingStop],
+  );
+
+  useEffect(() => {
+    componentMountedRef.current = true;
+
+    return () => {
+      componentMountedRef.current = false;
+      keepRecordingRef.current = false;
+      requestNativeRecordingStop("component unmount");
+    };
+  }, [requestNativeRecordingStop]);
+
+  useEffect(() => {
+    const unsubscribe =
+      subscribeRecordingUploadQueue(
+        (snapshot) => {
+          if (!componentMountedRef.current) {
+            return;
+          }
+
+          setPendingUploadCount(
+            snapshot.pendingCount,
+          );
+          setFailedUploadCount(
+            snapshot.retryingCount,
+          );
+          setUploadedSegmentCount(
+            snapshot.completedThisSession,
+          );
+        },
+      );
+
+    void resumeRecordingUploadQueue(
+      serverUrl,
+    ).catch((error: any) => {
+      console.warn(
+        "⚠️ Upload queue resume failed:",
+        error?.message || String(error),
+      );
+    });
+
+    return unsubscribe;
+  }, [serverUrl]);
+
+  useEffect(() => {
+    console.log("=== CAMERA STREAM STARTING ===");
+    console.log("📱 Camera ID:", cameraId);
+    console.log("🌐 Server URL:", serverUrl);
+    console.log(
+      "🔐 Camera credential fingerprint:",
+      getCameraSecurityFingerprint(),
+    );
+    console.log("================================");
+
+    const client = io(serverUrl, {
+      auth: getCameraSocketAuth(cameraId),
+      transports: ["websocket"],
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      timeout: 10_000,
+    });
+
+    socketRef.current = client;
+
+    const handleConnect = () => {
+      console.log("✅ Socket.IO connected:", client.id);
+
+      setIsConnected(true);
+      setConnectionMessage("Connected");
+
+      client.emit(
+        "camera:register",
+        { cameraId },
+        (response: {
+          ok?: boolean;
+          error?: string;
+        }) => {
+          if (response?.ok) {
+            console.log(
+              "✅ Camera registered:",
+              cameraId,
+            );
+          } else if (response?.error) {
+            console.error(
+              "❌ Camera registration failed:",
+              response.error,
+            );
+          }
+        },
+      );
+    };
+
+    const handleDisconnect = (reason: string) => {
+      console.warn("🔴 Socket disconnected:", reason);
+
+      setIsConnected(false);
+      setFps(0);
+      setConnectionMessage("Disconnected");
+    };
+
+    const handleConnectError = (error: Error) => {
+      console.error(
+        "❌ Socket connection error:",
+        error.message,
+      );
+
+      setIsConnected(false);
+      setConnectionMessage(
+        `Connection error: ${error.message}`,
+      );
+    };
+
+    const handleCameraReplaced = () => {
+      console.warn(
+        "⚠️ This camera was opened on another connection",
+      );
+
+      setConnectionMessage(
+        "Camera opened on another device",
+      );
+    };
+
+    const handlePreviewStart = () => {
+      console.log(
+        "▶️ Web dashboard requested JPEG preview",
+      );
+
+      snapshotRequestIdRef.current = null;
+      setPreviewRequested(true);
+      setConnectionMessage(
+        "Dashboard live preview active",
+      );
+    };
+
+    const handlePreviewStop = () => {
+      console.log(
+        "⏸️ Web dashboard stopped JPEG preview",
+      );
+
+      snapshotRequestIdRef.current = null;
+      setPreviewRequested(false);
+      setFps(0);
+      setConnectionMessage(
+        "Camera ready — preview on demand",
+      );
+    };
+
+    const handleSnapshotRequest = (
+      payload: {
+        requestId?: string;
+      } = {},
+    ) => {
+      const requestId =
+        String(payload.requestId || "").trim() ||
+        `snapshot-${Date.now()}`;
+
+      if (keepRecordingRef.current) {
+        client.emit(
+          "camera:snapshot:error",
+          {
+            cameraId,
+            requestId,
+            error:
+              "Snapshot is unavailable during MP4 recording",
+          },
+        );
+        return;
+      }
+
+      console.log(
+        "📷 Web dashboard requested snapshot:",
+        requestId,
+      );
+
+      snapshotRequestIdRef.current = requestId;
+      setPreviewRequested(true);
+    };
+
+    client.on("connect", handleConnect);
+    client.on("disconnect", handleDisconnect);
+    client.on("connect_error", handleConnectError);
+    client.on("camera:replaced", handleCameraReplaced);
+    client.on(
+      "camera:preview:start",
+      handlePreviewStart,
+    );
+    client.on(
+      "camera:preview:stop",
+      handlePreviewStop,
+    );
+    client.on(
+      "camera:snapshot:request",
+      handleSnapshotRequest,
+    );
+
+    return () => {
+      console.log("🧹 Closing camera socket");
+
+      keepRecordingRef.current = false;
+      requestNativeRecordingStop(
+        "camera connection cleanup",
+      );
+
+      if (captureTimerRef.current) {
+        clearTimeout(captureTimerRef.current);
+        captureTimerRef.current = null;
+      }
+
+      client.off("connect", handleConnect);
+      client.off("disconnect", handleDisconnect);
+      client.off("connect_error", handleConnectError);
+      client.off("camera:replaced", handleCameraReplaced);
+      client.off(
+        "camera:preview:start",
+        handlePreviewStart,
+      );
+      client.off(
+        "camera:preview:stop",
+        handlePreviewStop,
+      );
+      client.off(
+        "camera:snapshot:request",
+        handleSnapshotRequest,
+      );
+
+      client.disconnect();
+      socketRef.current = null;
+    };
+  }, [
+    cameraId,
+    serverUrl,
+    requestNativeRecordingStop,
+  ]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener(
+      "change",
+      (nextState) => {
+        if (
+          nextState !== "active" &&
+          keepRecordingRef.current
+        ) {
+          console.log(
+            "⏹️ App left foreground; stopping MP4 recording",
+          );
+
+          keepRecordingRef.current = false;
+          requestNativeRecordingStop(
+            "application left foreground",
+          );
+        }
+      },
+    );
+
+    return () => subscription.remove();
+  }, [requestNativeRecordingStop]);
+
+  useEffect(() => {
+    if (
+      captureMode !== "live" ||
+      !previewRequested ||
+      !isCameraReady ||
+      !isConnected ||
+      !cameraRef.current
+    ) {
+      return;
+    }
+
+    console.log("🎥 Starting JPEG live-preview loop");
+
+    let cancelled = false;
+
+    const scheduleNextCapture = () => {
+      if (cancelled) {
+        return;
+      }
+
+      captureTimerRef.current = setTimeout(
+        captureFrame,
+        CAPTURE_INTERVAL_MS,
+      );
+    };
+
+    const captureFrame = async () => {
+      if (
+        cancelled ||
+        !cameraRef.current ||
+        isCapturingRef.current
+      ) {
+        return;
+      }
+
+      const client = socketRef.current;
+
+      if (!client?.connected) {
+        scheduleNextCapture();
+        return;
+      }
+
+      try {
+        isCapturingRef.current = true;
+
+        const photo =
+          await cameraRef.current.takePictureAsync({
+            quality: 0.2,
+            base64: false,
+            skipProcessing: true,
+            exif: false,
+          });
+
+        if (cancelled || !photo?.uri) {
+          return;
+        }
+
+        const resized = await manipulateAsync(
+          photo.uri,
+          [
+            {
+              resize: {
+                width: FRAME_WIDTH,
+              },
+            },
+          ],
+          {
+            compress: JPEG_COMPRESSION,
+            format: SaveFormat.JPEG,
+            base64: true,
+          },
+        );
+
+        if (cancelled || !resized.base64) {
+          return;
+        }
+
+        totalFrameCountRef.current += 1;
+        fpsWindowFrameCountRef.current += 1;
+
+        const currentTotal =
+          totalFrameCountRef.current;
+
+        setFrameCount(currentTotal);
+
+        const now = Date.now();
+        const elapsed =
+          now - fpsWindowStartedAtRef.current;
+
+        if (elapsed >= 1000) {
+          const currentFps = Math.round(
+            (
+              fpsWindowFrameCountRef.current *
+              1000
+            ) / elapsed,
+          );
+
+          setFps(currentFps);
+
+          fpsWindowFrameCountRef.current = 0;
+          fpsWindowStartedAtRef.current = now;
+        }
+
+        if (currentTotal % 10 === 0) {
+          const frameSizeKB =
+            (resized.base64.length * 0.75) / 1024;
+
+          console.log(
+            `📸 Frame #${currentTotal}` +
+              ` | ${frameSizeKB.toFixed(1)} KB`,
+          );
+        }
+
+        if (client.connected) {
+          const snapshotRequestId =
+            snapshotRequestIdRef.current;
+
+          client.volatile.emit("camera:frame", {
+            cameraId,
+            frame: resized.base64,
+            timestamp: now,
+            source: snapshotRequestId
+              ? "snapshot"
+              : "preview",
+            requestId: snapshotRequestId,
+          });
+
+          if (snapshotRequestId) {
+            console.log(
+              "📷 On-demand snapshot sent:",
+              snapshotRequestId,
+            );
+
+            snapshotRequestIdRef.current = null;
+            setPreviewRequested(false);
+            setConnectionMessage(
+              "Snapshot sent — camera ready on demand",
+            );
+          }
+        }
+      } catch (error: any) {
+        const message = error?.message || String(error);
+
+        if (!message.includes("Another request")) {
+          console.warn(
+            "⚠️ Camera capture error:",
+            message,
+          );
+        }
+      } finally {
+        isCapturingRef.current = false;
+        scheduleNextCapture();
+      }
+    };
+
+    captureTimerRef.current = setTimeout(
+      captureFrame,
+      800,
+    );
+
+    return () => {
+      cancelled = true;
+
+      if (captureTimerRef.current) {
+        clearTimeout(captureTimerRef.current);
+        captureTimerRef.current = null;
+      }
+
+      isCapturingRef.current = false;
+      console.log("⏹️ JPEG live-preview loop stopped");
+    };
+  }, [
+    captureMode,
+    isCameraReady,
+    isConnected,
+    cameraId,
+    previewRequested,
+  ]);
+
+  useEffect(() => {
+    if (
+      captureMode !== "recording" ||
+      !isCameraReady ||
+      !isConnected ||
+      !cameraRef.current ||
+      recordingLoopRunningRef.current
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const runRecordingLoop = async () => {
+      recordingLoopRunningRef.current = true;
+
+      socketRef.current?.emit("camera:recording-status", {
+        cameraId,
+        isRecording: true,
+        segmentDurationSeconds: RECORDING_SEGMENT_SECONDS,
+      });
+
+      try {
+        while (
+          !cancelled &&
+          keepRecordingRef.current &&
+          cameraRef.current
+        ) {
+          const startedAt = new Date();
+          const startedAtIso = startedAt.toISOString();
+          const fileName = buildRecordingFileName(
+            cameraId,
+            startedAtIso,
+          );
+
+          setRecordingMessage(
+            `Recording ${fileName}`,
+          );
+
+          console.log(
+            `🔴 Recording MP4 segment for ${RECORDING_SEGMENT_SECONDS}s`,
+          );
+
+          console.log(
+            "⏳ Preparing the video camera before native recording",
+          );
+
+          setRecordingMessage(
+            "Preparing video camera preview…",
+          );
+
+          await new Promise<void>((resolve) => {
+            setTimeout(
+              resolve,
+              RECORDING_CAMERA_WARMUP_MS,
+            );
+          });
+
+          if (
+            cancelled ||
+            !keepRecordingRef.current
+          ) {
+            console.log(
+              "⏹️ Recording cancelled during video-camera warm-up",
+            );
+            break;
+          }
+
+          setRecordingMessage(
+            "MP4 recording active. Dashboard JPEG preview is paused until recording stops.",
+          );
+
+          const recordingCamera =
+            cameraRef.current;
+
+          if (!recordingCamera) {
+            break;
+          }
+
+          activeRecordingCameraRef.current =
+            recordingCamera;
+          nativeRecordingActiveRef.current = true;
+          recordingStartedAtRef.current = Date.now();
+
+          let video: { uri?: string } | null = null;
+
+          try {
+            video =
+              await recordingCamera.recordAsync({
+                maxDuration:
+                  RECORDING_SEGMENT_SECONDS,
+              });
+          } finally {
+            /*
+             * recordAsync has now settled. From this point onward no caller
+             * may invoke stopRecording for this CameraView instance.
+             */
+            nativeRecordingActiveRef.current = false;
+            activeRecordingCameraRef.current = null;
+            recordingStartedAtRef.current = null;
+
+            if (
+              pendingRecordingStopTimerRef.current !==
+              null
+            ) {
+              clearTimeout(
+                pendingRecordingStopTimerRef.current,
+              );
+              pendingRecordingStopTimerRef.current =
+                null;
+            }
+          }
+
+          if (cancelled || !video?.uri) {
+            break;
+          }
+
+          const durationSeconds = Math.max(
+            1,
+            Math.round(
+              (Date.now() - startedAt.getTime()) / 1000,
+            ),
+          );
+
+          setRecordedSegmentCount((count) => count + 1);
+
+          console.log("🎞️ MP4 segment completed:", video.uri);
+
+          void enqueueRecordingUpload({
+            fileUri: video.uri,
+            fileName,
+            cameraId,
+            serverUrl,
+            startedAt: startedAtIso,
+            durationSeconds,
+          })
+            .then(() => {
+              if (componentMountedRef.current) {
+                setRecordingMessage(
+                  `Queued ${fileName} for reliable upload`,
+                );
+              }
+            })
+            .catch((error: any) => {
+              const message =
+                error?.message || String(error);
+
+              console.error(
+                "❌ Failed to queue MP4:",
+                message,
+              );
+
+              if (componentMountedRef.current) {
+                setRecordingMessage(
+                  `Could not preserve MP4 for upload: ${message}`,
+                );
+              }
+            });
+
+          await new Promise((resolve) =>
+            setTimeout(resolve, 150),
+          );
+        }
+      } catch (error: any) {
+        const message = error?.message || String(error);
+
+        console.error("❌ MP4 recording error:", message);
+
+        if (componentMountedRef.current) {
+          setRecordingMessage(`Recording error: ${message}`);
+        }
+      } finally {
+        recordingLoopRunningRef.current = false;
+
+        socketRef.current?.emit("camera:recording-status", {
+          cameraId,
+          isRecording: false,
+        });
+
+        if (
+          !cancelled &&
+          componentMountedRef.current
+        ) {
+          keepRecordingRef.current = false;
+          setIsCameraReady(false);
+          setCaptureMode("live");
+          setRecordingMessage("MP4 recording stopped");
+        }
+      }
+    };
+
+    void runRecordingLoop();
+
+    return () => {
+      cancelled = true;
+      keepRecordingRef.current = false;
+      requestNativeRecordingStop(
+        "recording effect cleanup",
+      );
+    };
+  }, [
+    captureMode,
+    isCameraReady,
+    isConnected,
+    cameraId,
+    serverUrl,
+    requestNativeRecordingStop,
+  ]);
+
+  const startMp4Recording = () => {
+    snapshotRequestIdRef.current = null;
+    setPreviewRequested(false);
+    if (
+      captureMode !== "live" ||
+      recordingLoopRunningRef.current ||
+      nativeRecordingActiveRef.current
+    ) {
+      setRecordingMessage(
+        "Camera is still changing recording state",
+      );
+      return;
+    }
+
+    if (!isConnected) {
+      setRecordingMessage(
+        "Connect to the CCTV server before recording",
+      );
+      return;
+    }
+
+    console.log("🔴 MP4 continuous recording requested");
+
+    keepRecordingRef.current = true;
+    setFps(0);
+    setIsCameraReady(false);
+    setCaptureMode("recording");
+    setRecordingMessage("Preparing MP4 camera mode...");
+  };
+
+  const stopMp4Recording = () => {
+    if (
+      !keepRecordingRef.current &&
+      !nativeRecordingActiveRef.current
+    ) {
+      return;
+    }
+
+    console.log("⏹️ Stopping MP4 continuous recording");
+
+    keepRecordingRef.current = false;
+    setRecordingMessage(
+      "Finalizing current MP4 segment...",
+    );
+    requestNativeRecordingStop(RECORDING_STOP_REASON_USER);
+  };
+
+  useEffect(() => {
+    const sendHealth = () => {
+      const client = socketRef.current;
+
+      if (!client?.connected) {
+        return;
+      }
+
+      client.emit("camera:health", {
+        cameraId,
+        appState: AppState.currentState,
+        captureMode,
+        isRecording:
+          captureMode === "recording",
+        previewActive:
+          previewRequested &&
+          captureMode === "live",
+        cameraReady: isCameraReady,
+        pendingUploads: pendingUploadCount,
+        retryingUploads: failedUploadCount,
+        uploadedSegments:
+          uploadedSegmentCount,
+        recordedSegments:
+          recordedSegmentCount,
+        fps,
+        timestamp: Date.now(),
+      });
+    };
+
+    sendHealth();
+
+    const timer = setInterval(
+      sendHealth,
+      5000,
+    );
+
+    return () => clearInterval(timer);
+  }, [
+    cameraId,
+    captureMode,
+    previewRequested,
+    isCameraReady,
+    pendingUploadCount,
+    failedUploadCount,
+    uploadedSegmentCount,
+    recordedSegmentCount,
+    fps,
+  ]);
+
+  if (!permission) {
+    return (
+      <View style={styles.permissionContainer}>
+        <Text style={styles.message}>
+          Loading camera permission...
+        </Text>
+      </View>
+    );
+  }
+
+  if (!permission.granted) {
+    return (
+      <View style={styles.permissionContainer}>
+        <Text style={styles.message}>
+          📷 Camera permission is required
+        </Text>
+
+        <TouchableOpacity
+          style={styles.permissionButton}
+          onPress={requestPermission}
+        >
+          <Text style={styles.buttonText}>
+            Grant Camera Permission
+          </Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  const isRecording = captureMode === "recording";
+
+  return (
+    <View style={styles.container}>
+      <CameraView
+        key={cameraMode}
+        ref={cameraRef}
+        style={styles.camera}
+        facing="back"
+        mode={cameraMode}
+        mute={!RECORDING_WITH_AUDIO}
+        videoQuality={RECORDING_VIDEO_QUALITY}
+        onCameraReady={() => {
+          console.log(
+            `📷 Camera ready in ${cameraMode} mode`,
+          );
+          setIsCameraReady(true);
+        }}
+      />
+
+      <View style={styles.overlay}>
+        <View style={styles.statusBox}>
+          <Text style={styles.statusText}>
+            📱 {cameraId}
+          </Text>
+
+          <Text style={styles.statusText}>
+            {isConnected
+              ? "🟢 Connected"
+              : "🔴 Disconnected"}
+          </Text>
+
+          <Text style={styles.statusText}>
+            {connectionMessage}
+          </Text>
+
+          <Text style={styles.statusText}>
+            Mode: {isRecording ? "MP4 RECORDING" : "CAMERA READY"}
+          </Text>
+
+          {!isRecording && (
+            <>
+              <Text style={styles.statusText}>
+                Web JPEG:{" "}
+                {previewRequested
+                  ? "ACTIVE"
+                  : "ON DEMAND"}
+              </Text>
+              <Text style={styles.statusText}>
+                Frames: {frameCount}
+              </Text>
+
+              <Text style={styles.statusText}>
+                Actual FPS: {fps}
+              </Text>
+
+              <Text style={styles.statusText}>
+                Width: {FRAME_WIDTH}px
+              </Text>
+            </>
+          )}
+
+          <Text style={styles.statusText}>
+            Recorded segments: {recordedSegmentCount}
+          </Text>
+
+          <Text style={styles.statusText}>
+            Uploaded segments: {uploadedSegmentCount}
+          </Text>
+
+          <Text style={styles.statusText}>
+            Pending uploads: {pendingUploadCount}
+          </Text>
+
+          <Text style={styles.statusText}>
+            Retrying uploads: {failedUploadCount}
+          </Text>
+
+          <Text style={styles.recordingMessage}>
+            {recordingMessage}
+          </Text>
+        </View>
+
+        <TouchableOpacity
+          style={[
+            styles.recordButton,
+            isRecording
+              ? styles.stopButton
+              : styles.startButton,
+          ]}
+          onPress={
+            isRecording
+              ? stopMp4Recording
+              : startMp4Recording
+          }
+          disabled={!isConnected}
+        >
+          <Text style={styles.recordButtonText}>
+            {isRecording
+              ? "■ Stop MP4 Recording"
+              : "● Start MP4 Recording"}
+          </Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: "#000000",
+  },
+
+  permissionContainer: {
+    flex: 1,
+    justifyContent: "center",
+    padding: 24,
+    backgroundColor: "#000000",
+  },
+
+  camera: {
+    flex: 1,
+  },
+
+  message: {
+    color: "#FFFFFF",
+    fontSize: 18,
+    textAlign: "center",
+    marginBottom: 20,
+  },
+
+  permissionButton: {
+    alignSelf: "center",
+    paddingHorizontal: 28,
+    paddingVertical: 14,
+    borderRadius: 10,
+    backgroundColor: "#2563EB",
+  },
+
+  buttonText: {
+    color: "#FFFFFF",
+    fontSize: 16,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+
+  overlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    padding: 16,
+  },
+
+  statusBox: {
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: "rgba(0,0,0,0.72)",
+  },
+
+  statusText: {
+    color: "#FFFFFF",
+    fontSize: 12,
+    fontFamily: "monospace",
+    marginBottom: 4,
+  },
+
+  recordingMessage: {
+    color: "#FDE68A",
+    fontSize: 11,
+    marginTop: 6,
+  },
+
+  recordButton: {
+    marginTop: 12,
+    paddingVertical: 13,
+    paddingHorizontal: 18,
+    borderRadius: 10,
+    alignItems: "center",
+  },
+
+  startButton: {
+    backgroundColor: "#DC2626",
+  },
+
+  stopButton: {
+    backgroundColor: "#334155",
+  },
+
+  recordButtonText: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+});

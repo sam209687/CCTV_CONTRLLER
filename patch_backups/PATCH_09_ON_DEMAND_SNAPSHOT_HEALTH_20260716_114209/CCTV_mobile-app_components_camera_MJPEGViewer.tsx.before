@@ -1,0 +1,590 @@
+import React, {
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
+
+import {
+  Image,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
+
+import {
+  io,
+  Socket,
+} from 'socket.io-client';
+
+interface MJPEGViewerProps {
+  cameraId: string;
+  serverUrl: string;
+}
+
+interface CameraFramePayload {
+  cameraId?: string;
+  frame?: string;
+  timestamp?: number;
+  receivedAt?: number;
+}
+
+interface CameraStatusPayload {
+  cameraId?: string;
+  status?: string;
+  reason?: string;
+}
+
+const FRAME_INTERVAL_MS = 80;
+const STREAM_TIMEOUT_MS = 6000;
+
+function normalizeCameraId(value: unknown) {
+  return String(value || '')
+    .replace(/^smartphone:/i, '')
+    .trim()
+    .toLowerCase();
+}
+
+function createImageUri(frame: string) {
+  const cleanedFrame = frame.trim();
+
+  if (cleanedFrame.startsWith('data:image/')) {
+    return cleanedFrame;
+  }
+
+  return `data:image/jpeg;base64,${cleanedFrame}`;
+}
+
+export default function MJPEGViewer({
+  cameraId,
+  serverUrl,
+}: MJPEGViewerProps) {
+  const socketRef = useRef<Socket | null>(null);
+
+  const viewerIdRef = useRef(
+    `viewer-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 8)}`,
+  );
+
+  const lastRenderedFrameAtRef = useRef(0);
+  const lastReceivedFrameAtRef = useRef(0);
+
+  const fpsFrameCountRef = useRef(0);
+  const fpsWindowStartedAtRef =
+    useRef(Date.now());
+
+  const [frameUri, setFrameUri] =
+    useState<string | null>(null);
+
+  const [isConnected, setIsConnected] =
+    useState(false);
+
+  const [isStreaming, setIsStreaming] =
+    useState(false);
+
+  const [statusText, setStatusText] =
+    useState('Connecting');
+
+  const [fps, setFps] =
+    useState(0);
+
+  const [imageError, setImageError] =
+    useState<string | null>(null);
+
+  useEffect(() => {
+    const expectedCameraId =
+      normalizeCameraId(cameraId);
+
+    console.log('🎥 MJPEG viewer starting:', {
+      cameraId,
+      expectedCameraId,
+      serverUrl,
+      viewerId: viewerIdRef.current,
+    });
+
+    const client = io(serverUrl, {
+      transports: ['websocket'],
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      timeout: 10_000,
+    });
+
+    socketRef.current = client;
+
+    const handleConnect = () => {
+      console.log(
+        '✅ Dashboard socket connected:',
+        client.id,
+      );
+
+      setIsConnected(true);
+      setStatusText('Waiting for camera');
+
+      client.emit(
+        'viewer:watch',
+        {
+          cameraId,
+          viewerId: viewerIdRef.current,
+        },
+        (response: {
+          ok?: boolean;
+          cameraStatus?: string;
+          error?: string;
+        }) => {
+          console.log(
+            '👁️ Viewer registration:',
+            response,
+          );
+
+          if (response?.error) {
+            setStatusText(response.error);
+          }
+        },
+      );
+    };
+
+    const handleDisconnect = (reason: string) => {
+      console.warn(
+        '🔴 Dashboard socket disconnected:',
+        reason,
+      );
+
+      setIsConnected(false);
+      setIsStreaming(false);
+      setFps(0);
+      setStatusText('Disconnected from server');
+    };
+
+    const handleConnectError = (error: Error) => {
+      console.error(
+        '❌ Dashboard connection error:',
+        error.message,
+      );
+
+      setIsConnected(false);
+      setIsStreaming(false);
+      setStatusText(
+        `Connection error: ${error.message}`,
+      );
+    };
+
+    const handleFrame = (
+      payload: CameraFramePayload,
+    ) => {
+      if (
+        !payload ||
+        typeof payload.frame !== 'string'
+      ) {
+        return;
+      }
+
+      const incomingCameraId =
+        normalizeCameraId(payload.cameraId);
+
+      if (
+        incomingCameraId &&
+        incomingCameraId !== expectedCameraId
+      ) {
+        console.warn(
+          '⏭️ Ignoring frame for another camera:',
+          {
+            expectedCameraId,
+            incomingCameraId,
+          },
+        );
+
+        return;
+      }
+
+      const now = Date.now();
+
+      lastReceivedFrameAtRef.current = now;
+
+      if (
+        now -
+          lastRenderedFrameAtRef.current <
+        FRAME_INTERVAL_MS
+      ) {
+        return;
+      }
+
+      lastRenderedFrameAtRef.current = now;
+
+      setFrameUri(
+        createImageUri(payload.frame),
+      );
+
+      setIsStreaming(true);
+      setStatusText('Live');
+      setImageError(null);
+
+      fpsFrameCountRef.current += 1;
+
+      const elapsed =
+        now - fpsWindowStartedAtRef.current;
+
+      if (elapsed >= 1000) {
+        const currentFps = Math.round(
+          (
+            fpsFrameCountRef.current *
+            1000
+          ) / elapsed,
+        );
+
+        setFps(currentFps);
+
+        fpsFrameCountRef.current = 0;
+        fpsWindowStartedAtRef.current = now;
+      }
+    };
+
+    const handleCameraStatus = (
+      payload: CameraStatusPayload,
+    ) => {
+      if (
+        normalizeCameraId(payload.cameraId) !==
+        expectedCameraId
+      ) {
+        return;
+      }
+
+      switch (payload.status) {
+        case 'live':
+          setStatusText('Live');
+          break;
+
+        case 'waiting':
+          setIsStreaming(false);
+          setStatusText('Waiting for first frame');
+          break;
+
+        case 'recording':
+          /*
+           * Expo Camera pauses JPEG capture while native MP4 recording
+           * is active. Keep the latest frame visible.
+           */
+          setIsStreaming(false);
+          setFps(0);
+          setStatusText(
+            'MP4 recording active — live preview paused',
+          );
+          break;
+
+        case 'no_signal':
+          setIsStreaming(false);
+          setFps(0);
+          setStatusText('No camera signal');
+          break;
+
+        case 'offline':
+          setIsStreaming(false);
+          setFps(0);
+          setFrameUri(null);
+          setStatusText('Camera offline');
+          break;
+
+        default:
+          break;
+      }
+    };
+
+    const handleCameraOffline = (
+      payload: CameraStatusPayload,
+    ) => {
+      if (
+        normalizeCameraId(payload.cameraId) !==
+        expectedCameraId
+      ) {
+        return;
+      }
+
+      setIsStreaming(false);
+      setFps(0);
+      setFrameUri(null);
+      setStatusText('Camera offline');
+    };
+
+    client.on('connect', handleConnect);
+    client.on('disconnect', handleDisconnect);
+    client.on(
+      'connect_error',
+      handleConnectError,
+    );
+    client.on('camera:frame', handleFrame);
+    client.on(
+      'camera:status',
+      handleCameraStatus,
+    );
+    client.on(
+      'camera:offline',
+      handleCameraOffline,
+    );
+
+    const streamMonitor = setInterval(() => {
+      if (
+        lastReceivedFrameAtRef.current === 0
+      ) {
+        return;
+      }
+
+      const frameAge =
+        Date.now() -
+        lastReceivedFrameAtRef.current;
+
+      if (frameAge > STREAM_TIMEOUT_MS) {
+        setIsStreaming(false);
+        setFps(0);
+        setStatusText('No recent frames');
+      }
+    }, 1000);
+
+    return () => {
+      clearInterval(streamMonitor);
+
+      console.log('🧹 Closing MJPEG viewer');
+
+      if (client.connected) {
+        client.emit('viewer:unwatch', {
+          viewerId: viewerIdRef.current,
+        });
+      }
+
+      client.off('connect', handleConnect);
+      client.off(
+        'disconnect',
+        handleDisconnect,
+      );
+      client.off(
+        'connect_error',
+        handleConnectError,
+      );
+      client.off('camera:frame', handleFrame);
+      client.off(
+        'camera:status',
+        handleCameraStatus,
+      );
+      client.off(
+        'camera:offline',
+        handleCameraOffline,
+      );
+
+      client.disconnect();
+      socketRef.current = null;
+    };
+  }, [cameraId, serverUrl]);
+
+  return (
+    <View style={styles.container}>
+      {frameUri && (
+        <Image
+          source={{ uri: frameUri }}
+          style={styles.video}
+          resizeMode="contain"
+          fadeDuration={0}
+          onLoad={() => {
+            setImageError(null);
+          }}
+          onError={(event) => {
+            const errorMessage =
+              event.nativeEvent.error ||
+              'Browser could not decode JPEG frame';
+
+            console.error(
+              '❌ Frame rendering failed:',
+              errorMessage,
+            );
+
+            setImageError(errorMessage);
+          }}
+        />
+      )}
+
+      {!frameUri && !isStreaming && (
+        <View style={styles.placeholder}>
+          <Text style={styles.placeholderText}>
+            {isConnected
+              ? statusText
+              : 'Connecting to server…'}
+          </Text>
+
+          <Text style={styles.placeholderSub}>
+            {cameraId}
+          </Text>
+        </View>
+      )}
+
+      {frameUri && !isStreaming && (
+        <View style={styles.staleFrameBadge}>
+          <Text style={styles.staleFrameTitle}>
+            Last camera frame
+          </Text>
+          <Text style={styles.staleFrameText}>
+            {statusText}
+          </Text>
+        </View>
+      )}
+
+      {imageError && (
+        <View style={styles.errorBox}>
+          <Text style={styles.errorTitle}>
+            Frame rendering error
+          </Text>
+
+          <Text style={styles.errorText}>
+            {imageError}
+          </Text>
+        </View>
+      )}
+
+      {isStreaming && (
+        <View style={styles.liveBadge}>
+          <View style={styles.liveDot} />
+
+          <Text style={styles.liveText}>
+            LIVE
+          </Text>
+        </View>
+      )}
+
+      {isStreaming && (
+        <View style={styles.fpsBox}>
+          <Text style={styles.fpsText}>
+            {fps} FPS
+          </Text>
+        </View>
+      )}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    width: '100%',
+    height: '100%',
+    minHeight: 220,
+    position: 'relative',
+    overflow: 'hidden',
+    backgroundColor: '#000000',
+  },
+
+  video: {
+    ...StyleSheet.absoluteFillObject,
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#000000',
+  },
+
+  placeholder: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+
+  placeholderText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+
+  placeholderSub: {
+    color: '#AAAAAA',
+    fontSize: 12,
+    marginTop: 6,
+  },
+
+  staleFrameBadge: {
+    position: 'absolute',
+    right: 12,
+    bottom: 12,
+    left: 12,
+    zIndex: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 8,
+    backgroundColor: 'rgba(15,23,42,0.88)',
+  },
+
+  staleFrameTitle: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+
+  staleFrameText: {
+    color: '#CBD5E1',
+    fontSize: 11,
+    marginTop: 2,
+  },
+
+  liveBadge: {
+    position: 'absolute',
+    top: 12,
+    left: 12,
+    zIndex: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: '#10B981',
+  },
+
+  liveDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: 6,
+    backgroundColor: '#FFFFFF',
+  },
+
+  liveText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+
+  fpsBox: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    zIndex: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+  },
+
+  fpsText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontFamily: 'monospace',
+  },
+
+  errorBox: {
+    position: 'absolute',
+    right: 12,
+    bottom: 12,
+    left: 12,
+    zIndex: 20,
+    padding: 10,
+    borderRadius: 8,
+    backgroundColor: 'rgba(127,29,29,0.94)',
+  },
+
+  errorTitle: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+    marginBottom: 3,
+  },
+
+  errorText: {
+    color: '#FECACA',
+    fontSize: 11,
+  },
+});

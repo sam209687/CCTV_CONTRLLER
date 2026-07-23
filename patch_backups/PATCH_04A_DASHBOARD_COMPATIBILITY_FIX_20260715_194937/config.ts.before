@@ -1,0 +1,124 @@
+// constants/config.ts
+
+/**
+ * API Configuration
+ * IMPORTANT: Update BASE_URL based on your environment
+ */
+
+// ===================== ENV =====================
+const isDevelopment = process.env.NODE_ENV === "development";
+
+// ===================== BASE URL LOGIC =====================
+export const getBaseURL = () => {
+  // 1. Expo Web / Browser
+  if (typeof window !== "undefined") {
+    return "http://localhost:3000";
+  }
+
+  // 2. Native mobile (Android / iOS / Physical device)
+  return "http://10.69.50.214:3000"; // ✅ Your computer IP
+};
+
+// ===================== API CONFIG =====================
+export const API_CONFIG = {
+  BASE_URL: getBaseURL(),
+  TIMEOUT: 30000,
+  RETRY_ATTEMPTS: 3,
+  RETRY_DELAY: 1000,
+};
+
+// ===================== API ENDPOINTS =====================
+export const API_ENDPOINTS = {
+  AUTH: {
+    LOGIN: "/api/auth/login",
+    REGISTER: "/api/auth/register",
+    LOGOUT: "/api/auth/logout",
+    REFRESH: "/api/auth/refresh",
+  },
+  CAMERAS: {
+    LIST: "/api/cameras",
+    DETAIL: (id: string) => `/api/cameras/${id}`,
+    CREATE: "/api/cameras",
+    UPDATE: (id: string) => `/api/cameras/${id}`,
+    DELETE: (id: string) => `/api/cameras/${id}`,
+    STREAM: (id: string) => `/api/cameras/${id}/stream`,
+    SNAPSHOT: (id: string) => `/api/cameras/${id}/snapshot`,
+  },
+  EVENTS: {
+    LIST: "/api/events",
+    DETAIL: (id: string) => `/api/events/${id}`,
+    ACKNOWLEDGE: (id: string) => `/api/events/${id}/acknowledge`,
+  },
+  NOTIFICATIONS: {
+    LIST: "/api/notifications",
+    MARK_READ: (id: string) => `/api/notifications/${id}/read`,
+    SAVE_TOKEN: "/api/notifications/token",
+  },
+  TELEGRAM: {
+    SETUP: "/api/telegram/setup",
+    TEST: "/api/telegram/test",
+    LINK: "/api/telegram/link",
+  },
+  ANALYTICS: {
+    DASHBOARD: "/api/analytics/dashboard",
+    EVENTS_BY_CAMERA: "/api/analytics/events-by-camera",
+  },
+};
+
+// ===================== COLORS =====================
+export const COLORS = {
+  primary: "#2563eb",
+  secondary: "#64748b",
+  success: "#16a34a",
+  error: "#dc2626",
+  warning: "#f59e0b",
+
+  background: "#f8fafc",
+  card: "#ffffff",
+  border: "#e5e7eb",
+
+  text: "#0f172a",
+  textSecondary: "#64748b",
+};
+
+// ===================== NETWORK CONFIG =====================
+export const NETWORK_CONFIG = {
+  ANDROID_EMULATOR: "http://10.0.2.2:3000",
+  IOS_SIMULATOR: "http://localhost:3000",
+  LOCAL_NETWORK: "http://10.69.50.214:3000",
+  PRODUCTION: "https://your-api.com",
+
+  ACTIVE: getBaseURL(),
+};
+
+// ===================== HELPERS =====================
+export const testAPIConnection = async (): Promise<boolean> => {
+  try {
+    const response = await fetch(
+      `${API_CONFIG.BASE_URL}${API_ENDPOINTS.CAMERAS.LIST}`,
+      {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+        signal: AbortSignal.timeout(5000),
+      },
+    );
+    return response.ok;
+  } catch (error) {
+    console.error("API connection test failed:", error);
+    return false;
+  }
+};
+
+export const getCurrentAPIUrl = () => API_CONFIG.BASE_URL;
+
+export const debugAPIConfig = () => {
+  console.log("=== API Configuration Debug ===");
+  console.log("Environment:", isDevelopment ? "Development" : "Production");
+  console.log("Platform:", typeof window !== "undefined" ? "Web" : "Native");
+  console.log("Base URL:", API_CONFIG.BASE_URL);
+  console.log(
+    "Cameras Endpoint:",
+    `${API_CONFIG.BASE_URL}${API_ENDPOINTS.CAMERAS.LIST}`,
+  );
+  console.log("==============================");
+};

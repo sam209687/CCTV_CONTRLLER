@@ -1,0 +1,444 @@
+// CCTV/mobile-app/components/camera/LiveStream.tsx
+
+import { useTheme } from "@/contexts/ThemeContext";
+import Constants from "expo-constants";
+import React, { useEffect, useMemo, useState } from "react";
+import { Image, Platform, StyleSheet, Text, View } from "react-native";
+
+import MJPEGViewer from "./MJPEGViewer";
+
+interface LiveStreamProps {
+  camera: {
+    id: string | number;
+    name?: string;
+    streamUrl?: string;
+    rtspUrl?: string;
+  };
+  displayMode?: "inline" | "expanded";
+}
+
+/**
+ * Removes trailing slashes:
+ *
+ * http://localhost:3000/
+ * becomes:
+ * http://localhost:3000
+ */
+function normalizeServerUrl(value: string): string {
+  return value.trim().replace(/\/+$/, "");
+}
+
+/**
+ * Dashboard server resolution:
+ *
+ * Web development:
+ * http://localhost:8082
+ * becomes:
+ * http://localhost:3000
+ *
+ * If the dashboard is opened through the PC LAN IP:
+ * http://172.24.195.214:8082
+ * becomes:
+ * http://172.24.195.214:3000
+ *
+ * Native dashboard builds:
+ * use EXPO_PUBLIC_SERVER_URL or app config.
+ */
+function getServerUrl(): string | null {
+  if (Platform.OS === "web" && typeof window !== "undefined") {
+    const browserHost = window.location.hostname;
+
+    /*
+     * Some systems resolve "localhost" through IPv6 (::1),
+     * while the Node server is listening on IPv4 0.0.0.0.
+     *
+     * Use 127.0.0.1 when the dashboard is opened locally.
+     */
+    const backendHost = browserHost === "localhost" ? "127.0.0.1" : browserHost;
+
+    const automaticUrl = `http://${backendHost}:3000`;
+
+    console.log(
+      "🌐 Dashboard automatically selected CCTV server:",
+      automaticUrl,
+    );
+
+    return automaticUrl;
+  }
+
+  const configuredUrl =
+    process.env.EXPO_PUBLIC_SERVER_URL ||
+    Constants.expoConfig?.extra?.serverUrl;
+
+  if (typeof configuredUrl === "string" && configuredUrl.trim()) {
+    return configuredUrl.trim().replace(/\/+$/, "");
+  }
+
+  console.error("❌ CCTV backend URL could not be determined.");
+
+  return null;
+}
+
+export default function LiveStream({
+  camera,
+  displayMode = "expanded",
+}: LiveStreamProps) {
+  const { colors } = useTheme();
+
+  const isExpanded = displayMode === "expanded";
+
+  const [isLoading, setIsLoading] = useState(true);
+
+  const [error, setError] = useState<string | null>(null);
+
+  const streamUrl = (camera.streamUrl || camera.rtspUrl || "").trim();
+
+  const isSmartphoneCamera = /^smartphone:/i.test(streamUrl);
+
+  const isHttpStream = /^https?:\/\//i.test(streamUrl);
+
+  const extractedCameraId = isSmartphoneCamera
+    ? streamUrl.replace(/^smartphone:/i, "").trim()
+    : "";
+
+  /*
+   * Resolve once per component mount.
+   *
+   * When the hotspot IP changes, restarting/reloading the dashboard
+   * will calculate the new browser hostname automatically.
+   */
+  const serverUrl = useMemo(() => getServerUrl(), []);
+
+  useEffect(() => {
+    console.log("📹 LiveStream opened:", {
+      cameraDatabaseId: camera.id,
+      cameraName: camera.name,
+      streamUrl,
+      isSmartphoneCamera,
+      isHttpStream,
+      extractedCameraId,
+      serverUrl,
+    });
+  }, [
+    camera.id,
+    camera.name,
+    streamUrl,
+    isSmartphoneCamera,
+    isHttpStream,
+    extractedCameraId,
+    serverUrl,
+  ]);
+
+  /*
+   * Reset HTTP image status when a different stream is opened.
+   */
+  useEffect(() => {
+    setIsLoading(true);
+    setError(null);
+  }, [streamUrl]);
+
+  // --------------------------------------------------
+  // Smartphone Socket.IO camera
+  // --------------------------------------------------
+
+  if (isSmartphoneCamera) {
+    if (!extractedCameraId) {
+      return (
+        <View style={[styles.container, { backgroundColor: colors.surface }]}>
+          <View style={styles.placeholderContainer}>
+            <Text style={styles.configurationErrorTitle}>
+              Invalid smartphone camera
+            </Text>
+
+            <Text style={styles.configurationErrorText}>
+              The stream URL does not contain a camera ID.
+            </Text>
+
+            <Text style={styles.configurationValue}>
+              {streamUrl || "No stream URL"}
+            </Text>
+          </View>
+        </View>
+      );
+    }
+
+    if (!serverUrl) {
+      return (
+        <View style={[styles.container, { backgroundColor: colors.surface }]}>
+          <View style={styles.placeholderContainer}>
+            <Text style={styles.configurationErrorTitle}>
+              CCTV server unavailable
+            </Text>
+
+            <Text style={styles.configurationErrorText}>
+              The dashboard could not determine the backend server address.
+            </Text>
+          </View>
+        </View>
+      );
+    }
+
+    return (
+      <View style={[styles.container, { backgroundColor: colors.surface }]}>
+        <View
+          style={[
+            styles.videoContainer,
+            isExpanded && styles.expandedVideoContainer,
+          ]}
+        >
+          <MJPEGViewer
+            key={`${extractedCameraId}-${serverUrl}`}
+            cameraId={extractedCameraId}
+            serverUrl={serverUrl}
+          />
+        </View>
+
+        {isExpanded && (
+          <View style={styles.controls}>
+            <View style={styles.infoBox}>
+              <Text style={[styles.infoLabel, { color: colors.textSecondary }]}>
+                Camera ID
+              </Text>
+
+              <Text
+                selectable
+                style={[styles.infoValue, { color: colors.text }]}
+              >
+                {extractedCameraId}
+              </Text>
+            </View>
+
+            <View style={styles.infoBox}>
+              <Text style={[styles.infoLabel, { color: colors.textSecondary }]}>
+                Camera type
+              </Text>
+
+              <Text style={[styles.infoValue, { color: colors.text }]}>
+                📱 Smartphone CCTV camera
+              </Text>
+            </View>
+
+            <View style={styles.infoBox}>
+              <Text style={[styles.infoLabel, { color: colors.textSecondary }]}>
+                Socket server
+              </Text>
+
+              <Text
+                selectable
+                style={[styles.infoValue, { color: colors.text }]}
+              >
+                {serverUrl}
+              </Text>
+            </View>
+          </View>
+        )}
+      </View>
+    );
+  }
+
+  // --------------------------------------------------
+  // HTTP / MJPEG network camera
+  // --------------------------------------------------
+
+  if (isHttpStream) {
+    return (
+      <View style={[styles.container, { backgroundColor: colors.surface }]}>
+        <View
+          style={[
+            styles.videoContainer,
+            isExpanded && styles.expandedVideoContainer,
+          ]}
+        >
+          <Image
+            source={{ uri: streamUrl }}
+            style={styles.video}
+            resizeMode="contain"
+            onLoadStart={() => {
+              setIsLoading(true);
+              setError(null);
+            }}
+            onLoad={() => {
+              setIsLoading(false);
+              setError(null);
+            }}
+            onError={(event) => {
+              const imageError =
+                event.nativeEvent.error || "Failed to load camera stream";
+
+              console.error("❌ HTTP camera image error:", imageError);
+
+              setError(imageError);
+              setIsLoading(false);
+            }}
+          />
+
+          {isLoading && !error && (
+            <View style={styles.loadingOverlay}>
+              <Text style={styles.loadingText}>Loading camera stream...</Text>
+            </View>
+          )}
+
+          {error && (
+            <View style={styles.errorOverlay}>
+              <Text style={styles.errorTitle}>Camera stream failed</Text>
+
+              <Text style={styles.errorText}>{error}</Text>
+            </View>
+          )}
+        </View>
+      </View>
+    );
+  }
+
+  // --------------------------------------------------
+  // RTSP or missing/unknown stream
+  // --------------------------------------------------
+
+  return (
+    <View style={[styles.container, { backgroundColor: colors.surface }]}>
+      <View style={styles.placeholderContainer}>
+        <Text style={[styles.placeholderText, { color: colors.text }]}>
+          📹 Camera: {camera.name || camera.id}
+        </Text>
+
+        <Text
+          selectable
+          style={[styles.placeholderSubtext, { color: colors.textSecondary }]}
+        >
+          Stream: {streamUrl || "No stream URL"}
+        </Text>
+
+        <Text
+          style={[styles.placeholderSubtext, { color: colors.textSecondary }]}
+        >
+          RTSP streams require a compatible native player or an RTSP gateway.
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    width: "100%",
+  },
+
+  videoContainer: {
+    width: "100%",
+    aspectRatio: 16 / 9,
+    minHeight: 240,
+    position: "relative",
+    overflow: "hidden",
+    borderRadius: 12,
+    backgroundColor: "#000000",
+  },
+
+  expandedVideoContainer: {
+    minHeight: 420,
+  },
+
+  video: {
+    ...StyleSheet.absoluteFillObject,
+    width: "100%",
+    height: "100%",
+    backgroundColor: "#000000",
+  },
+
+  loadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 20,
+    backgroundColor: "rgba(0,0,0,0.72)",
+  },
+
+  loadingText: {
+    color: "#FFFFFF",
+    fontSize: 16,
+    textAlign: "center",
+  },
+
+  errorOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 20,
+    backgroundColor: "rgba(0,0,0,0.92)",
+  },
+
+  errorTitle: {
+    color: "#FCA5A5",
+    fontSize: 17,
+    fontWeight: "700",
+    marginBottom: 8,
+    textAlign: "center",
+  },
+
+  errorText: {
+    color: "#FECACA",
+    fontSize: 14,
+    textAlign: "center",
+  },
+
+  placeholderContainer: {
+    minHeight: 240,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 20,
+  },
+
+  placeholderText: {
+    fontSize: 18,
+    fontWeight: "700",
+    marginBottom: 8,
+    textAlign: "center",
+  },
+
+  placeholderSubtext: {
+    fontSize: 14,
+    marginBottom: 4,
+    textAlign: "center",
+  },
+
+  configurationErrorTitle: {
+    color: "#EF4444",
+    fontSize: 18,
+    fontWeight: "700",
+    marginBottom: 8,
+    textAlign: "center",
+  },
+
+  configurationErrorText: {
+    color: "#CBD5E1",
+    fontSize: 14,
+    marginBottom: 8,
+    textAlign: "center",
+  },
+
+  configurationValue: {
+    color: "#94A3B8",
+    fontSize: 12,
+    textAlign: "center",
+  },
+
+  controls: {
+    padding: 16,
+    gap: 12,
+  },
+
+  infoBox: {
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: "rgba(59,130,246,0.1)",
+  },
+
+  infoLabel: {
+    fontSize: 12,
+    marginBottom: 4,
+  },
+
+  infoValue: {
+    fontSize: 14,
+    fontWeight: "600",
+  },
+});

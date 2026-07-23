@@ -1,0 +1,523 @@
+// app/(main)/cameras/index.tsx
+
+import React, { useEffect, useMemo, useState } from "react";
+import {
+  Alert,
+  Platform,
+  RefreshControl,
+  ScrollView,
+  View,
+} from "react-native";
+
+import AddCamera from "@/components/camera/AddCamera-Updated";
+import {
+  AIFeaturesSection,
+  CameraGridSection,
+  QuickActions,
+  StatsBar,
+} from "@/components/camera/cameras-page/CameraGrid";
+import {
+  CameraAudioModal,
+  CameraPreviewModal,
+  CameraSettingsModal,
+} from "@/components/camera/cameras-page/CameraModals";
+import {
+  getSmartphoneCameraId,
+  hasUsableCameraStream,
+  isDemoPlaceholderCamera,
+  normalizePairingId,
+  readHiddenCameraIds,
+  saveHiddenCameraIds,
+  styles,
+} from "@/components/camera/cameras-page/cameraPageShared";
+import { useTheme } from "@/contexts/ThemeContext";
+import { api } from "@/services/api";
+import cameraService from "@/services/camera";
+import type { Camera } from "@/types";
+
+export default function CamerasScreen() {
+  const { colors } = useTheme();
+
+  const [cameras, setCameras] = useState<Camera[]>([]);
+  const [hiddenCameraIds, setHiddenCameraIds] =
+    useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const [showAddCamera, setShowAddCamera] = useState(false);
+  const [activePreviewCameraId, setActivePreviewCameraId] =
+    useState<string | null>(null);
+
+  /*
+   * Expanded preview is separate from the audio-selected camera.
+   * This keeps only one live viewer mounted at a time.
+   */
+  const [expandedPreviewCamera, setExpandedPreviewCamera] =
+    useState<Camera | null>(null);
+
+  const [selectedCamera, setSelectedCamera] =
+    useState<Camera | null>(null);
+  const [showAudioModal, setShowAudioModal] =
+    useState(false);
+
+  const [editingCamera, setEditingCamera] =
+    useState<Camera | null>(null);
+  const [cameraNameInput, setCameraNameInput] =
+    useState("");
+  const [pairingIdInput, setPairingIdInput] =
+    useState("");
+  const [savingCamera, setSavingCamera] =
+    useState(false);
+
+  useEffect(() => {
+    setHiddenCameraIds(readHiddenCameraIds());
+    void loadCameras();
+  }, []);
+
+  const visibleCameras = useMemo(
+    () =>
+      cameras.filter(
+        (camera) =>
+          !hiddenCameraIds.includes(String(camera.id)),
+      ),
+    [cameras, hiddenCameraIds],
+  );
+
+  const activeCameras = useMemo(
+    () =>
+      visibleCameras.filter(
+        (camera) =>
+          camera.isActive && hasUsableCameraStream(camera),
+      ).length,
+    [visibleCameras],
+  );
+
+  async function loadCameras(): Promise<void> {
+    try {
+      const data = await api.getCameras();
+
+      const realCameras = data.filter(
+        (camera) => !isDemoPlaceholderCamera(camera),
+      );
+
+      if (realCameras.length !== data.length) {
+        console.warn(
+          `Ignored ${
+            data.length - realCameras.length
+          } demo placeholder camera record(s).`,
+        );
+      }
+
+      setCameras(realCameras);
+    } catch (error) {
+      console.error("Failed to load cameras:", error);
+      Alert.alert(
+        "Camera loading failed",
+        "The dashboard could not load the camera list.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function onRefresh(): Promise<void> {
+    setRefreshing(true);
+
+    try {
+      await loadCameras();
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  async function discoverCameras(): Promise<void> {
+    try {
+      Alert.alert(
+        "Discovering Cameras",
+        "Scanning the local network...",
+      );
+
+      const discovered =
+        await cameraService.discoverCameras();
+
+      console.log("Camera discovery result:", discovered);
+    } catch (error) {
+      console.error("Camera discovery failed:", error);
+      Alert.alert(
+        "Discovery failed",
+        "The dashboard could not discover cameras.",
+      );
+    }
+  }
+
+  function handleCameraAdded(): void {
+    setShowAddCamera(false);
+    void loadCameras();
+  }
+
+  function openPreview(camera: Camera): void {
+    if (!hasUsableCameraStream(camera)) {
+      openCameraSettings(camera);
+
+      Alert.alert(
+        "Camera ID required",
+        "Enter the smartphone camera ID before opening the live preview.",
+      );
+      return;
+    }
+
+    const cameraId = String(camera.id);
+
+    console.log("Toggling inline live camera preview:", {
+      databaseId: camera.id,
+      name: camera.name,
+      streamUrl: camera.streamUrl || camera.rtspUrl,
+    });
+
+    setExpandedPreviewCamera(null);
+    setShowAudioModal(false);
+    setSelectedCamera(null);
+
+    setActivePreviewCameraId((currentId) =>
+      currentId === cameraId ? null : cameraId,
+    );
+  }
+
+  function closePreview(): void {
+    setActivePreviewCameraId(null);
+  }
+
+  function openExpandedPreview(camera: Camera): void {
+    if (!hasUsableCameraStream(camera)) {
+      openCameraSettings(camera);
+
+      Alert.alert(
+        "Camera ID required",
+        "Enter the smartphone camera ID before opening the expanded live preview.",
+      );
+      return;
+    }
+
+    console.log("Opening expanded live camera preview:", {
+      databaseId: camera.id,
+      name: camera.name,
+      streamUrl: camera.streamUrl || camera.rtspUrl,
+    });
+
+    /*
+     * Unmount the inline viewer before mounting the expanded viewer.
+     */
+    setActivePreviewCameraId(null);
+    setShowAudioModal(false);
+    setSelectedCamera(null);
+    setExpandedPreviewCamera(camera);
+  }
+
+  function closeExpandedPreview(): void {
+    setExpandedPreviewCamera(null);
+  }
+
+  function openAudio(camera: Camera): void {
+    setActivePreviewCameraId(null);
+    setExpandedPreviewCamera(null);
+    setSelectedCamera(camera);
+    setShowAudioModal(true);
+  }
+
+  function closeAudio(): void {
+    setShowAudioModal(false);
+    setSelectedCamera(null);
+  }
+
+  function openCameraSettings(camera: Camera): void {
+    setExpandedPreviewCamera(null);
+    setEditingCamera(camera);
+    setCameraNameInput(camera.name || "");
+    setPairingIdInput(getSmartphoneCameraId(camera));
+  }
+
+  function closeCameraSettings(): void {
+    if (savingCamera) {
+      return;
+    }
+
+    setEditingCamera(null);
+    setCameraNameInput("");
+    setPairingIdInput("");
+  }
+
+  async function saveCameraSettings(): Promise<void> {
+    if (!editingCamera) {
+      return;
+    }
+
+    const normalizedName = cameraNameInput.trim();
+    const normalizedPairingId = normalizePairingId(
+      pairingIdInput,
+    );
+
+    if (!normalizedName) {
+      Alert.alert(
+        "Camera name required",
+        "Enter a name such as Shop Front Camera.",
+      );
+      return;
+    }
+
+    if (!normalizedPairingId) {
+      Alert.alert(
+        "Smartphone camera ID required",
+        "Enter the same camera ID shown in the phone app.",
+      );
+      return;
+    }
+
+    const smartphoneStreamUrl =
+      `smartphone:${normalizedPairingId}`;
+
+    setSavingCamera(true);
+
+    try {
+      const updatedCamera = await api.updateCamera(
+        String(editingCamera.id),
+        {
+          name: normalizedName,
+          streamUrl: smartphoneStreamUrl,
+          rtspUrl: smartphoneStreamUrl,
+        },
+      );
+
+      const mergedCamera: Camera = {
+        ...editingCamera,
+        ...updatedCamera,
+        name: normalizedName,
+        streamUrl: smartphoneStreamUrl,
+        rtspUrl: smartphoneStreamUrl,
+      };
+
+      setCameras((current) =>
+        current.map((camera) =>
+          String(camera.id) === String(editingCamera.id)
+            ? {
+                ...camera,
+                ...mergedCamera,
+              }
+            : camera,
+        ),
+      );
+
+      setSelectedCamera((current) =>
+        current &&
+        String(current.id) === String(editingCamera.id)
+          ? {
+              ...current,
+              ...mergedCamera,
+            }
+          : current,
+      );
+
+      setExpandedPreviewCamera((current) =>
+        current &&
+        String(current.id) === String(editingCamera.id)
+          ? {
+              ...current,
+              ...mergedCamera,
+            }
+          : current,
+      );
+
+      setEditingCamera(null);
+      setCameraNameInput("");
+      setPairingIdInput("");
+
+      Alert.alert(
+        "Camera saved",
+        `“${normalizedName}” is linked to ${normalizedPairingId}. Click the card to open live preview.`,
+      );
+    } catch (error: any) {
+      console.error("Failed to save camera settings:", error);
+      Alert.alert(
+        "Camera save failed",
+        error?.response?.data?.error ||
+          error?.message ||
+          "The camera settings could not be saved.",
+      );
+    } finally {
+      setSavingCamera(false);
+    }
+  }
+
+  function hideCameraCard(camera: Camera): void {
+    const databaseCameraId = String(camera.id);
+    const cameraName =
+      camera.name || `Camera ${databaseCameraId}`;
+
+    const performHide = (): void => {
+      setHiddenCameraIds((currentIds) => {
+        if (currentIds.includes(databaseCameraId)) {
+          return currentIds;
+        }
+
+        const updatedIds = [
+          ...currentIds,
+          databaseCameraId,
+        ];
+
+        saveHiddenCameraIds(updatedIds);
+        return updatedIds;
+      });
+
+      if (activePreviewCameraId === databaseCameraId) {
+        closePreview();
+      }
+
+      if (
+        expandedPreviewCamera &&
+        String(expandedPreviewCamera.id) === databaseCameraId
+      ) {
+        closeExpandedPreview();
+      }
+
+      if (
+        selectedCamera &&
+        String(selectedCamera.id) === databaseCameraId
+      ) {
+        closeAudio();
+      }
+
+      if (
+        editingCamera &&
+        String(editingCamera.id) === databaseCameraId
+      ) {
+        closeCameraSettings();
+      }
+    };
+
+    if (
+      Platform.OS === "web" &&
+      typeof window !== "undefined"
+    ) {
+      const confirmed = window.confirm(
+        `Hide "${cameraName}" from this dashboard?\n\n` +
+          "The camera will not be deleted from the database.",
+      );
+
+      if (confirmed) {
+        performHide();
+      }
+      return;
+    }
+
+    Alert.alert(
+      "Hide camera",
+      `Hide "${cameraName}" from this dashboard?`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Hide",
+          style: "destructive",
+          onPress: performHide,
+        },
+      ],
+    );
+  }
+
+  function restoreHiddenCameras(): void {
+    setHiddenCameraIds([]);
+    saveHiddenCameraIds([]);
+  }
+
+  return (
+    <View
+      style={[
+        styles.container,
+        { backgroundColor: colors.background },
+      ]}
+    >
+      <StatsBar
+        total={visibleCameras.length}
+        active={activeCameras}
+        colors={colors}
+      />
+
+      <ScrollView
+        style={styles.content}
+        contentContainerStyle={styles.contentContainer}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+          />
+        }
+      >
+        <QuickActions
+          colors={colors}
+          onAdd={() => setShowAddCamera(true)}
+          onDiscover={() => void discoverCameras()}
+          onAutoSetup={() =>
+            Alert.alert(
+              "Auto Setup",
+              "This feature will be added later.",
+            )
+          }
+        />
+
+        <CameraGridSection
+          cameras={visibleCameras}
+          allCameraCount={cameras.length}
+          hiddenCount={hiddenCameraIds.length}
+          loading={loading}
+          colors={colors}
+          onAddCamera={() => setShowAddCamera(true)}
+          onRestoreHidden={restoreHiddenCameras}
+          activePreviewCameraId={activePreviewCameraId}
+          onOpenCamera={openPreview}
+          onClosePreview={closePreview}
+          onExpandCamera={openExpandedPreview}
+          onOpenAudio={openAudio}
+          onOpenSettings={openCameraSettings}
+          onHideCamera={hideCameraCard}
+        />
+
+        <AIFeaturesSection colors={colors} />
+      </ScrollView>
+
+      <AddCamera
+        visible={showAddCamera}
+        onClose={() => setShowAddCamera(false)}
+        onCameraAdded={handleCameraAdded}
+        shopId="default"
+      />
+
+      <CameraPreviewModal
+        visible={Boolean(expandedPreviewCamera)}
+        camera={expandedPreviewCamera}
+        colors={colors}
+        onClose={closeExpandedPreview}
+        onOpenSettings={(camera) => {
+          closeExpandedPreview();
+          openCameraSettings(camera);
+        }}
+      />
+
+      <CameraSettingsModal
+        camera={editingCamera}
+        cameraName={cameraNameInput}
+        pairingId={pairingIdInput}
+        saving={savingCamera}
+        colors={colors}
+        onCameraNameChange={setCameraNameInput}
+        onPairingIdChange={setPairingIdInput}
+        onSave={() => void saveCameraSettings()}
+        onClose={closeCameraSettings}
+      />
+
+      <CameraAudioModal
+        visible={showAudioModal}
+        camera={selectedCamera}
+        colors={colors}
+        onClose={closeAudio}
+      />
+    </View>
+  );
+}

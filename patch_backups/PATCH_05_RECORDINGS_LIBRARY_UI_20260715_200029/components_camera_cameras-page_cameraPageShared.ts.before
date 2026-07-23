@@ -1,0 +1,826 @@
+// components/camera/cameras-page/cameraPageShared.ts
+
+import { Dimensions, Platform, StyleSheet } from "react-native";
+
+import type { Camera } from "@/types";
+
+const { width } = Dimensions.get("window");
+const isTablet = width >= 768;
+
+const HIDDEN_CAMERAS_STORAGE_KEY = "cctv-hidden-camera-ids";
+
+const DEMO_CAMERA_IDS = new Set([
+  "mock-1",
+  "mock-2",
+  "mock-3",
+  "cam-1",
+  "cam-2",
+]);
+
+const DEMO_CAMERA_NAMES = new Set([
+  "front door camera",
+  "back entrance",
+  "cash counter",
+  "old android phone",
+  "wifi cctv camera",
+]);
+
+export function readHiddenCameraIds(): string[] {
+  if (Platform.OS !== "web" || typeof window === "undefined") {
+    return [];
+  }
+
+  try {
+    const savedValue = window.localStorage.getItem(
+      HIDDEN_CAMERAS_STORAGE_KEY,
+    );
+
+    if (!savedValue) {
+      return [];
+    }
+
+    const parsedValue: unknown = JSON.parse(savedValue);
+
+    if (!Array.isArray(parsedValue)) {
+      return [];
+    }
+
+    return parsedValue.filter(
+      (cameraId): cameraId is string => typeof cameraId === "string",
+    );
+  } catch (error) {
+    console.warn("Failed to read hidden cameras:", error);
+    return [];
+  }
+}
+
+export function saveHiddenCameraIds(cameraIds: string[]): void {
+  if (Platform.OS !== "web" || typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(
+      HIDDEN_CAMERAS_STORAGE_KEY,
+      JSON.stringify(cameraIds),
+    );
+  } catch (error) {
+    console.warn("Failed to save hidden cameras:", error);
+  }
+}
+
+export function getCameraStreamValue(camera: Camera): string {
+  return (camera.streamUrl || camera.rtspUrl || "").trim();
+}
+
+export function normalizePairingId(value: string): string {
+  return value
+    .trim()
+    .replace(/^smartphone:/i, "")
+    .trim();
+}
+
+export function getSmartphoneCameraId(camera: Camera): string {
+  const streamValue = getCameraStreamValue(camera);
+
+  if (/^smartphone:/i.test(streamValue)) {
+    return normalizePairingId(streamValue);
+  }
+
+  if (/^cam-[a-z0-9-]+$/i.test(streamValue)) {
+    return streamValue;
+  }
+
+  const databaseId = String(camera.id).trim();
+
+  if (!streamValue && /^cam-[a-z0-9-]+$/i.test(databaseId)) {
+    return databaseId;
+  }
+
+  return "";
+}
+
+export function getCameraReferenceId(camera: Camera): string {
+  return getSmartphoneCameraId(camera) || String(camera.id);
+}
+
+export function hasUsableCameraStream(camera: Camera): boolean {
+  const streamValue = getCameraStreamValue(camera);
+
+  if (/^smartphone:/i.test(streamValue)) {
+    return Boolean(normalizePairingId(streamValue));
+  }
+
+  if (/^https?:\/\//i.test(streamValue)) {
+    return true;
+  }
+
+  if (/^rtsp:\/\//i.test(streamValue)) {
+    return true;
+  }
+
+  if (/^cam-[a-z0-9-]+$/i.test(streamValue)) {
+    return true;
+  }
+
+  return Boolean(getSmartphoneCameraId(camera));
+}
+
+export function buildCameraForPreview(camera: Camera): Camera {
+  const streamValue = getCameraStreamValue(camera);
+
+  if (/^smartphone:/i.test(streamValue)) {
+    return {
+      ...camera,
+      streamUrl: `smartphone:${normalizePairingId(streamValue)}`,
+    };
+  }
+
+  if (/^cam-[a-z0-9-]+$/i.test(streamValue)) {
+    return {
+      ...camera,
+      streamUrl: `smartphone:${streamValue}`,
+    };
+  }
+
+  if (streamValue) {
+    return {
+      ...camera,
+      streamUrl: streamValue,
+    };
+  }
+
+  const smartphoneCameraId = getSmartphoneCameraId(camera);
+
+  if (smartphoneCameraId) {
+    return {
+      ...camera,
+      streamUrl: `smartphone:${smartphoneCameraId}`,
+    };
+  }
+
+  return camera;
+}
+
+export function isDemoPlaceholderCamera(camera: Camera): boolean {
+  const id = String(camera.id).toLowerCase();
+  const name = (camera.name || "").trim().toLowerCase();
+
+  return DEMO_CAMERA_IDS.has(id) || DEMO_CAMERA_NAMES.has(name);
+}
+
+export const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+  },
+
+  statsBar: {
+    flexDirection: "row",
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E2E8F0",
+  },
+
+  statItem: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+
+  statIcon: {
+    fontSize: 24,
+  },
+
+  statValue: {
+    fontSize: 20,
+    fontWeight: "bold",
+  },
+
+  statLabel: {
+    fontSize: 11,
+  },
+
+  content: {
+    flex: 1,
+  },
+
+  contentContainer: {
+    paddingBottom: 32,
+  },
+
+  section: {
+    padding: 16,
+  },
+
+  sectionHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 16,
+    gap: 12,
+  },
+
+  sectionHeaderActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    flexWrap: "wrap",
+    gap: 16,
+  },
+
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: "bold",
+  },
+
+  restoreHiddenText: {
+    fontSize: 13,
+    fontWeight: "700",
+  },
+
+  viewToggle: {
+    fontSize: 14,
+    fontWeight: "600",
+  },
+
+  actionsRow: {
+    flexDirection: "row",
+    gap: 12,
+    marginTop: 16,
+  },
+
+  actionButton: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 16,
+    borderRadius: 12,
+    gap: 8,
+  },
+
+  actionButtonIcon: {
+    fontSize: 20,
+  },
+
+  actionButtonText: {
+    fontSize: 14,
+    fontWeight: "600",
+  },
+
+  loadingText: {
+    textAlign: "center",
+    padding: 20,
+    fontSize: 14,
+  },
+
+  cameraGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 12,
+  },
+
+  cameraCard: {
+    width: "100%",
+    borderRadius: 16,
+    overflow: "hidden",
+    position: "relative",
+    ...(isTablet && {
+      width: "48%",
+    }),
+  },
+
+  removeCameraButton: {
+    position: "absolute",
+    top: 10,
+    right: 10,
+    zIndex: 20,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(239,68,68,0.96)",
+    borderWidth: 2,
+    borderColor: "rgba(255,255,255,0.9)",
+  },
+
+  removeCameraButtonText: {
+    color: "#FFFFFF",
+    fontSize: 17,
+    fontWeight: "900",
+    lineHeight: 19,
+  },
+
+  statusBadge: {
+    position: "absolute",
+    top: 12,
+    left: 12,
+    zIndex: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 6,
+    gap: 5,
+  },
+
+  statusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "#FFFFFF",
+  },
+
+  statusText: {
+    color: "#FFFFFF",
+    fontSize: 11,
+    fontWeight: "bold",
+  },
+
+  thumbnail: {
+    aspectRatio: 16 / 9,
+    backgroundColor: "#111827",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 20,
+  },
+
+  inlinePreviewContainer: {
+    width: "100%",
+    backgroundColor: "#000000",
+  },
+
+  inlinePreviewFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: "#0F172A",
+  },
+
+  inlinePreviewStatusText: {
+    flex: 1,
+    color: "#D1FAE5",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+
+  stopPreviewButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: "#DC2626",
+  },
+
+  stopPreviewButtonText: {
+    color: "#FFFFFF",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+
+  thumbnailIcon: {
+    fontSize: 48,
+    marginBottom: 10,
+  },
+
+  thumbnailTitle: {
+    color: "#FFFFFF",
+    fontSize: 15,
+    fontWeight: "800",
+    textAlign: "center",
+  },
+
+  thumbnailSubtitle: {
+    color: "#CBD5E1",
+    fontSize: 12,
+    marginTop: 6,
+    textAlign: "center",
+  },
+
+  aiIndicator: {
+    position: "absolute",
+    top: 54,
+    right: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 6,
+  },
+
+  aiText: {
+    color: "#FFFFFF",
+    fontSize: 11,
+    fontWeight: "bold",
+  },
+
+  cameraInfo: {
+    padding: 12,
+  },
+
+  cameraName: {
+    fontSize: 16,
+    fontWeight: "600",
+    marginBottom: 4,
+  },
+
+  cameraLocation: {
+    fontSize: 13,
+  },
+
+  cameraReference: {
+    fontSize: 12,
+    marginTop: 8,
+    fontFamily: Platform.OS === "web" ? "monospace" : undefined,
+  },
+
+  quickActions: {
+    flexDirection: "row",
+    paddingHorizontal: 12,
+    paddingBottom: 12,
+    gap: 8,
+  },
+
+  quickActionButton: {
+    flex: 1,
+    alignItems: "center",
+    padding: 10,
+    borderRadius: 8,
+  },
+
+  quickActionIcon: {
+    fontSize: 20,
+  },
+
+  featuresBar: {
+    flexDirection: "row",
+    padding: 12,
+    paddingTop: 0,
+    gap: 6,
+  },
+
+  featureBadge: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#F1F5F9",
+    paddingVertical: 4,
+    paddingHorizontal: 6,
+    borderRadius: 6,
+    gap: 4,
+  },
+
+  featureBadgeIcon: {
+    fontSize: 12,
+  },
+
+  featureBadgeText: {
+    fontSize: 10,
+    color: "#64748B",
+    fontWeight: "600",
+  },
+
+  aiGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 12,
+    marginTop: 16,
+  },
+
+  aiCard: {
+    width: "48%",
+    padding: 16,
+    borderRadius: 12,
+    alignItems: "center",
+  },
+
+  aiCardIcon: {
+    fontSize: 32,
+    marginBottom: 8,
+  },
+
+  aiCardName: {
+    fontSize: 13,
+    fontWeight: "600",
+    marginBottom: 8,
+    textAlign: "center",
+  },
+
+  aiCardBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+
+  aiCardStatus: {
+    fontSize: 11,
+    fontWeight: "bold",
+  },
+
+  modal: {
+    flex: 1,
+  },
+
+  modalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: 20,
+    paddingTop: 48,
+  },
+
+  modalTitleContainer: {
+    flex: 1,
+    paddingRight: 16,
+  },
+
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: "bold",
+  },
+
+  previewCameraName: {
+    fontSize: 16,
+    fontWeight: "700",
+    marginTop: 6,
+  },
+
+  modalSubtitle: {
+    fontSize: 12,
+    marginTop: 4,
+  },
+
+  modalCloseButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  closeButton: {
+    fontSize: 28,
+  },
+
+  modalContent: {
+    flex: 1,
+    paddingHorizontal: 16,
+  },
+
+  modalContentContainer: {
+    paddingBottom: 32,
+  },
+
+  previewPanel: {
+    width: "100%",
+    minHeight: 260,
+    borderRadius: 14,
+    overflow: "hidden",
+    backgroundColor: "#000000",
+  },
+
+  setupRequiredPanel: {
+    minHeight: 260,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+    borderRadius: 14,
+  },
+
+  setupRequiredIcon: {
+    fontSize: 52,
+    marginBottom: 12,
+  },
+
+  setupRequiredTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    textAlign: "center",
+  },
+
+  setupRequiredText: {
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: 8,
+    textAlign: "center",
+  },
+
+  controlsSection: {
+    marginTop: 16,
+    padding: 20,
+    borderRadius: 16,
+  },
+
+  controlsTitle: {
+    fontSize: 18,
+    fontWeight: "bold",
+    marginBottom: 4,
+  },
+
+  cameraControlSubtitle: {
+    fontSize: 12,
+    marginBottom: 12,
+  },
+
+  detectionRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E2E8F0",
+    gap: 12,
+  },
+
+  detectionLeft: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+
+  detectionTextContainer: {
+    flex: 1,
+  },
+
+  detectionIcon: {
+    fontSize: 24,
+  },
+
+  detectionLabel: {
+    fontSize: 15,
+    fontWeight: "600",
+  },
+
+  detectionSublabel: {
+    fontSize: 12,
+    marginTop: 2,
+  },
+
+  toggle: {
+    width: 50,
+    height: 30,
+    borderRadius: 15,
+    padding: 2,
+  },
+
+  toggleThumb: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: "#FFFFFF",
+  },
+
+  emptyState: {
+    padding: 48,
+    borderRadius: 16,
+    alignItems: "center",
+  },
+
+  emptyIcon: {
+    fontSize: 64,
+    marginBottom: 16,
+  },
+
+  emptyTitle: {
+    fontSize: 20,
+    fontWeight: "bold",
+    marginBottom: 8,
+    textAlign: "center",
+  },
+
+  emptyText: {
+    fontSize: 14,
+    textAlign: "center",
+    marginBottom: 24,
+  },
+
+  emptyButton: {
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 10,
+  },
+
+  emptyButtonText: {
+    color: "#FFFFFF",
+    fontSize: 15,
+    fontWeight: "600",
+    textAlign: "center",
+  },
+
+  settingsModalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(15,23,42,0.72)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 20,
+  },
+
+  settingsModalCard: {
+    width: "100%",
+    maxWidth: 560,
+    borderRadius: 18,
+    padding: 20,
+  },
+
+  settingsModalHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+
+  settingsModalTitle: {
+    fontSize: 20,
+    fontWeight: "800",
+  },
+
+  settingsModalDescription: {
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: 6,
+  },
+
+  settingsCloseButton: {
+    width: 40,
+    height: 40,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  referenceBox: {
+    marginTop: 18,
+    padding: 14,
+    borderRadius: 12,
+    backgroundColor: "rgba(59,130,246,0.10)",
+  },
+
+  referenceLabel: {
+    fontSize: 12,
+    marginBottom: 5,
+  },
+
+  referenceValue: {
+    fontSize: 14,
+    fontWeight: "700",
+    fontFamily: Platform.OS === "web" ? "monospace" : undefined,
+  },
+
+  settingsFormGroup: {
+    marginTop: 18,
+  },
+
+  settingsLabel: {
+    fontSize: 14,
+    fontWeight: "700",
+    marginBottom: 8,
+  },
+
+  settingsInput: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 15,
+  },
+
+  settingsHelpText: {
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 7,
+  },
+
+  settingsActions: {
+    flexDirection: "row",
+    gap: 12,
+    marginTop: 22,
+  },
+
+  settingsCancelButton: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingVertical: 13,
+    alignItems: "center",
+  },
+
+  settingsCancelText: {
+    fontSize: 14,
+    fontWeight: "700",
+  },
+
+  settingsSaveButton: {
+    flex: 2,
+    borderRadius: 10,
+    paddingVertical: 13,
+    alignItems: "center",
+  },
+
+  settingsSaveText: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+});

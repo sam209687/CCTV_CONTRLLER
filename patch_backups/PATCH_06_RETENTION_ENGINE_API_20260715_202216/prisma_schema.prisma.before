@@ -1,0 +1,175 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             String   @id @default(cuid())
+  email          String   @unique
+  password       String
+  name           String?
+  phoneNumber    String?
+  telegramChatId String?
+  fcmToken       String?
+  expoPushToken  String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  shops         Shop[]
+  cameras       Camera[]
+  notifications Notification[]
+
+  subscription Subscription?
+}
+
+model Shop {
+  id        String   @id @default(cuid())
+  name      String
+  address   String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  cameras Camera[]
+}
+
+model Camera {
+  id     String @id @default(cuid())
+  name   String
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  rtspUrl              String?
+  isActive             Boolean @default(true)
+  motionSensitivity    Int     @default(25)
+  notificationCooldown Int     @default(300)
+  audioMessageUrl      String?
+
+  enableTelegram   Boolean @default(true)
+  enableMobilePush Boolean @default(true)
+  enableSMS        Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  motionEvents MotionEvent[]
+}
+
+model MotionEvent {
+  id        String   @id @default(cuid())
+  cameraId  String
+  camera    Camera   @relation(fields: [cameraId], references: [id], onDelete: Cascade)
+  timestamp DateTime @default(now())
+  imageUrl  String
+  videoUrl  String?
+  message   String?
+
+  duration   Int?
+  confidence Float?
+  notified   Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  notifications Notification[]
+}
+
+model Notification {
+  id            String       @id @default(cuid())
+  userId        String
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  motionEventId String?
+  motionEvent   MotionEvent? @relation(fields: [motionEventId], references: [id], onDelete: SetNull)
+
+  title  String
+  body   String
+  type   String    @default("motion")
+  read   Boolean   @default(false)
+  sentAt DateTime  @default(now())
+  readAt DateTime?
+
+  telegramSent   Boolean @default(false)
+  mobilePushSent Boolean @default(false)
+  smsSent        Boolean @default(false)
+  deliveryError  String?
+}
+
+model Subscription {
+  id String @id @default(cuid())
+
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  plan   String @default("free")
+  status String @default("active")
+
+  maxCameras     Int @default(1)
+  maxStorageDays Int @default(7)
+  maxShops       Int @default(1)
+
+  startDate DateTime  @default(now())
+  endDate   DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+// --------------------------------------------------
+// CCTV MP4 recording metadata
+// Added by PATCH_02_RECORDING_DATABASE_API
+// --------------------------------------------------
+model Recording {
+  id               String         @id @default(cuid())
+  cameraId         String
+  fileName         String
+  relativeFilePath String         @unique
+  sizeBytes        BigInt
+  startedAt        DateTime
+  endedAt          DateTime?
+  durationSeconds  Int            @default(0)
+  checksumSha256   String?
+  recordingMode    String         @default("CONTINUOUS")
+  eventType        String?
+  isLocked         Boolean        @default(false)
+  uploadStatus     String         @default("STORED")
+  storageTargetId  String?
+  storageTarget    StorageTarget? @relation(fields: [storageTargetId], references: [id], onDelete: SetNull)
+  uploadedAt       DateTime       @default(now())
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@index([cameraId, startedAt])
+  @@index([startedAt])
+  @@index([isLocked])
+  @@index([storageTargetId])
+}
+
+// --------------------------------------------------
+// Recording storage destination
+// Added by PATCH_03_STORAGE_MANAGER_API
+// --------------------------------------------------
+model StorageTarget {
+  id                String      @id @default(cuid())
+  name              String
+  type              String      @default("LOCAL")
+  rootPath          String      @unique
+  isDefault         Boolean     @default(false)
+  isEnabled         Boolean     @default(true)
+  status            String      @default("UNKNOWN")
+  totalBytes        BigInt?
+  availableBytes    BigInt?
+  lastHealthCheckAt DateTime?
+  lastError         String?
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  recordings        Recording[]
+
+  @@index([isDefault])
+  @@index([isEnabled])
+  @@index([type])
+}

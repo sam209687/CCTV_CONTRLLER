@@ -1,0 +1,131 @@
+// services/storage.ts
+import { Platform } from 'react-native';
+import * as SecureStore from 'expo-secure-store';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { STORAGE_KEYS } from '@/constants/config';
+import type { User } from '@/types';
+
+const isWeb = Platform.OS === 'web';
+
+const webStorage = {
+  async setItem(key: string, value: string): Promise<void> {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(key, value);
+    }
+  },
+  async getItem(key: string): Promise<string | null> {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem(key);
+    }
+    return null;
+  },
+  async removeItem(key: string): Promise<void> {
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem(key);
+    }
+  },
+};
+
+export class StorageService {
+  static async setAuthToken(token: string): Promise<void> {
+    if (isWeb) {
+      await webStorage.setItem(STORAGE_KEYS.AUTH_TOKEN, token);
+    } else {
+      await SecureStore.setItemAsync(STORAGE_KEYS.AUTH_TOKEN, token);
+    }
+  }
+
+  static async getAuthToken(): Promise<string | null> {
+    if (isWeb) {
+      return await webStorage.getItem(STORAGE_KEYS.AUTH_TOKEN);
+    } else {
+      return await SecureStore.getItemAsync(STORAGE_KEYS.AUTH_TOKEN);
+    }
+  }
+
+  static async removeAuthToken(): Promise<void> {
+    if (isWeb) {
+      await webStorage.removeItem(STORAGE_KEYS.AUTH_TOKEN);
+    } else {
+      await SecureStore.deleteItemAsync(STORAGE_KEYS.AUTH_TOKEN);
+    }
+  }
+
+  static async setUserData(user: User): Promise<void> {
+    const data = JSON.stringify(user);
+    if (isWeb) {
+      await webStorage.setItem(STORAGE_KEYS.USER_DATA, data);
+    } else {
+      await SecureStore.setItemAsync(STORAGE_KEYS.USER_DATA, data);
+    }
+  }
+
+  static async getUserData(): Promise<User | null> {
+    const data = isWeb
+      ? await webStorage.getItem(STORAGE_KEYS.USER_DATA)
+      : await SecureStore.getItemAsync(STORAGE_KEYS.USER_DATA);
+    return data ? JSON.parse(data) : null;
+  }
+
+  static async removeUserData(): Promise<void> {
+    if (isWeb) {
+      await webStorage.removeItem(STORAGE_KEYS.USER_DATA);
+    } else {
+      await SecureStore.deleteItemAsync(STORAGE_KEYS.USER_DATA);
+    }
+  }
+
+  static async setExpoPushToken(token: string): Promise<void> {
+    if (isWeb) {
+      await webStorage.setItem(STORAGE_KEYS.EXPO_PUSH_TOKEN, token);
+    } else {
+      await SecureStore.setItemAsync(STORAGE_KEYS.EXPO_PUSH_TOKEN, token);
+    }
+  }
+
+  static async getExpoPushToken(): Promise<string | null> {
+    if (isWeb) {
+      return await webStorage.getItem(STORAGE_KEYS.EXPO_PUSH_TOKEN);
+    } else {
+      return await SecureStore.getItemAsync(STORAGE_KEYS.EXPO_PUSH_TOKEN);
+    }
+  }
+
+  static async setNotificationSettings(settings: any): Promise<void> {
+    await AsyncStorage.setItem(
+      STORAGE_KEYS.NOTIFICATION_SETTINGS,
+      JSON.stringify(settings)
+    );
+  }
+
+  static async getNotificationSettings(): Promise<any> {
+    const data = await AsyncStorage.getItem(STORAGE_KEYS.NOTIFICATION_SETTINGS);
+    return data ? JSON.parse(data) : null;
+  }
+
+  static async clearAll(): Promise<void> {
+    if (isWeb) {
+      await webStorage.removeItem(STORAGE_KEYS.AUTH_TOKEN);
+      await webStorage.removeItem(STORAGE_KEYS.USER_DATA);
+      await webStorage.removeItem(STORAGE_KEYS.EXPO_PUSH_TOKEN);
+    } else {
+      await SecureStore.deleteItemAsync(STORAGE_KEYS.AUTH_TOKEN);
+      await SecureStore.deleteItemAsync(STORAGE_KEYS.USER_DATA);
+    }
+    await AsyncStorage.clear();
+  }
+
+  static async setItem(key: string, value: string): Promise<void> {
+    await AsyncStorage.setItem(key, value);
+  }
+
+  static async getItem(key: string): Promise<string | null> {
+    return await AsyncStorage.getItem(key);
+  }
+
+  static async removeItem(key: string): Promise<void> {
+    await AsyncStorage.removeItem(key);
+  }
+}
+
+export default StorageService;

@@ -1,0 +1,201 @@
+// services/recordings.ts
+//
+// Typed client for the MP4 recording metadata and playback API
+// exposed by server.js on port 3000.
+
+import Constants from "expo-constants";
+import { Platform } from "react-native";
+
+export interface Recording {
+  id: string;
+  cameraId: string;
+  fileName: string;
+  relativeFilePath: string;
+  fileUrl: string;
+  sizeBytes: number;
+  startedAt: string;
+  endedAt: string | null;
+  durationSeconds: number;
+  checksumSha256: string | null;
+  recordingMode: string;
+  eventType: string | null;
+  isLocked: boolean;
+  uploadStatus: string;
+  storageTargetId: string | null;
+  uploadedAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RecordingSummary {
+  cameraId: string | null;
+  count: number;
+  lockedCount: number;
+  totalSizeBytes: number;
+  totalDurationSeconds: number;
+  oldestStartedAt: string | null;
+  newestStartedAt: string | null;
+}
+
+export interface ListRecordingsOptions {
+  cameraId?: string;
+  from?: string;
+  to?: string;
+  limit?: number;
+}
+
+function normalizeServerUrl(value: string): string {
+  return value.trim().replace(/\/+$/, "");
+}
+
+export function getRecordingServerUrl(): string {
+  if (Platform.OS === "web" && typeof window !== "undefined") {
+    const browserHost = window.location.hostname;
+    const backendHost =
+      browserHost === "localhost" ? "127.0.0.1" : browserHost;
+
+    return `http://${backendHost}:3000`;
+  }
+
+  const configured =
+    process.env.EXPO_PUBLIC_SERVER_URL ||
+    Constants.expoConfig?.extra?.serverUrl;
+
+  if (typeof configured === "string" && configured.trim()) {
+    return normalizeServerUrl(configured);
+  }
+
+  throw new Error(
+    "The recording backend URL could not be determined.",
+  );
+}
+
+async function apiRequest<T>(
+  path: string,
+  options: RequestInit = {},
+): Promise<T> {
+  const serverUrl = getRecordingServerUrl();
+
+  const response = await fetch(`${serverUrl}${path}`, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
+  });
+
+  let payload: unknown = null;
+
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+
+  if (!response.ok) {
+    const message =
+      payload &&
+      typeof payload === "object" &&
+      "error" in payload &&
+      typeof payload.error === "string"
+        ? payload.error
+        : `Recording request failed with HTTP ${response.status}`;
+
+    throw new Error(message);
+  }
+
+  return payload as T;
+}
+
+function buildQuery(
+  values: Record<string, string | number | undefined>,
+): string {
+  const parameters = new URLSearchParams();
+
+  Object.entries(values).forEach(([key, value]) => {
+    if (
+      value !== undefined &&
+      value !== "" &&
+      Number.isFinite(value as number)
+    ) {
+      parameters.set(key, String(value));
+      return;
+    }
+
+    if (typeof value === "string" && value.trim()) {
+      parameters.set(key, value.trim());
+    }
+  });
+
+  const query = parameters.toString();
+
+  return query ? `?${query}` : "";
+}
+
+export async function listRecordings(
+  options: ListRecordingsOptions = {},
+): Promise<Recording[]> {
+  const query = buildQuery({
+    cameraId: options.cameraId,
+    from: options.from,
+    to: options.to,
+    limit: options.limit ?? 200,
+  });
+
+  const response = await apiRequest<{
+    ok: boolean;
+    count: number;
+    recordings: Recording[];
+  }>(`/recordings${query}`);
+
+  return response.recordings || [];
+}
+
+export async function getRecordingSummary(
+  cameraId?: string,
+): Promise<RecordingSummary> {
+  const query = buildQuery({ cameraId });
+
+  const response = await apiRequest<
+    RecordingSummary & { ok: boolean }
+  >(`/recordings/summary${query}`);
+
+  return {
+    cameraId: response.cameraId,
+    count: response.count,
+    lockedCount: response.lockedCount,
+    totalSizeBytes: response.totalSizeBytes,
+    totalDurationSeconds: response.totalDurationSeconds,
+    oldestStartedAt: response.oldestStartedAt,
+    newestStartedAt: response.newestStartedAt,
+  };
+}
+
+export async function setRecordingLocked(
+  recordingId: string,
+  isLocked: boolean,
+): Promise<Recording> {
+  const response = await apiRequest<{
+    ok: boolean;
+    recording: Recording;
+  }>(
+    `/recordings/${encodeURIComponent(recordingId)}/lock`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ isLocked }),
+    },
+  );
+
+  return response.recording;
+}
+
+export async function deleteRecording(
+  recordingId: string,
+): Promise<void> {
+  await apiRequest<{ ok: boolean }>(
+    `/recordings/${encodeURIComponent(recordingId)}`,
+    {
+      method: "DELETE",
+    },
+  );
+}

@@ -1,0 +1,73 @@
+Terminal 1 — Connect the phone
+
+Connect the smartphone by USB with USB debugging enabled:
+
+adb devices
+
+Expected:
+
+10BDAL16GL0007S    device
+
+Configure Metro forwarding:
+
+adb reverse --remove-all
+adb reverse tcp:8081 tcp:8081
+adb reverse --list
+
+Expected:
+
+tcp:8081 tcp:8081
+
+
+-
+
+Terminal 2 — Start the backend
+
+cd ~/Videos/backend-nextjs
+
+pkill -f "node server.js" || true
+
+node server.js
+
+Keep this terminal open.
+
+
+
+Terminal 3 — Start React Native Metro
+cd ~/Videos/backend-nextjs/cctv-camera-native
+
+adb reverse tcp:8081 tcp:8081
+
+CI=1 npx react-native start \
+  --reset-cache \
+  </dev/null
+
+Keep this terminal open.
+
+
+
+
+Terminal 4 — Launch the camera application
+
+First confirm that the app is installed:
+
+adb shell pm path \
+  com.cctvcameranative
+
+Expected output similar to:
+
+package:/data/app/.../base.apk
+
+
+
+Finally Start the WEBRTC
+
+Launch it:
+
+adb shell am force-stop \
+  com.cctvcameranative
+
+adb shell monkey \
+  -p com.cctvcameranative \
+  -c android.intent.category.LAUNCHER \
+  1

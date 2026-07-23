@@ -1,0 +1,72 @@
+// components/layout/ThemeToggle.tsx
+import React from 'react';
+import { TouchableOpacity, View, Text, StyleSheet } from 'react-native';
+import { useTheme } from '@/contexts/ThemeContext';
+
+export default function ThemeToggle() {
+  const { theme, setTheme, colors } = useTheme();
+
+  const themes: Array<{ value: 'light' | 'dark' | 'system'; icon: string; label: string }> = [
+    { value: 'light', icon: '☀️', label: 'Light' },
+    { value: 'dark', icon: '🌙', label: 'Dark' },
+    { value: 'system', icon: '💻', label: 'System' },
+  ];
+
+  return (
+    <View style={[styles.container, { backgroundColor: colors.surface }]}>
+      {themes.map((t) => (
+        <TouchableOpacity
+          key={t.value}
+          style={[
+            styles.option,
+            {
+              backgroundColor: theme === t.value ? colors.primary : 'transparent',
+              borderColor: colors.border,
+            },
+          ]}
+          onPress={() => setTheme(t.value)}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.icon}>{t.icon}</Text>
+          <Text
+            style={[
+              styles.label,
+              {
+                color: theme === t.value ? '#FFFFFF' : colors.text,
+              },
+            ]}
+          >
+            {t.label}
+          </Text>
+        </TouchableOpacity>
+      ))}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flexDirection: 'row',
+    padding: 4,
+    borderRadius: 12,
+    gap: 4,
+  },
+  option: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: 6,
+  },
+  icon: {
+    fontSize: 16,
+  },
+  label: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+});

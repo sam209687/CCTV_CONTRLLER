@@ -1,0 +1,38 @@
+// services/security/dashboardSecurity.ts
+//
+// Local dashboard credential for Socket.IO and management APIs.
+// This is suitable for the current private-LAN development phase.
+
+export function getDashboardSecurityToken(): string {
+  const token =
+    process.env
+      .EXPO_PUBLIC_CCTV_DASHBOARD_TOKEN
+      ?.trim();
+
+  if (!token) {
+    throw new Error(
+      "EXPO_PUBLIC_CCTV_DASHBOARD_TOKEN is not configured. Re-run Patch 10 provisioning.",
+    );
+  }
+
+  return token;
+}
+
+export function getDashboardSocketAuth(): {
+  role: "viewer";
+  token: string;
+} {
+  return {
+    role: "viewer",
+    token: getDashboardSecurityToken(),
+  };
+}
+
+export function getDashboardSecurityHeaders(): {
+  Authorization: string;
+} {
+  return {
+    Authorization:
+      `Bearer ${getDashboardSecurityToken()}`,
+  };
+}

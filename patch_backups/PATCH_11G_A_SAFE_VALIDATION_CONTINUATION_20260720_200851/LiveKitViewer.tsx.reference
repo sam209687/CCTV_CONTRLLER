@@ -1,0 +1,462 @@
+import React, {
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+
+import {
+  Platform,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
+
+import {
+  RemoteVideoTrack,
+  Room,
+  RoomEvent,
+  Track,
+} from "livekit-client";
+
+import {
+  io,
+  Socket,
+} from "socket.io-client";
+
+import {
+  getDashboardSecurityHeaders,
+  getDashboardSocketAuth,
+} from "@/services/security/dashboardSecurity";
+
+interface LiveKitViewerProps {
+  cameraId: string;
+  serverUrl: string;
+}
+
+interface LiveKitCredentials {
+  server_url: string;
+  participant_token: string;
+  room_name: string;
+  participant_identity: string;
+}
+
+type ViewerStatus =
+  | "requesting-token"
+  | "connecting"
+  | "waiting-camera"
+  | "live"
+  | "reconnecting"
+  | "offline"
+  | "error";
+
+function NativeDashboardFallback() {
+  return (
+    <View style={styles.overlay}>
+      <Text style={styles.statusTitle}>
+        WebRTC dashboard viewer
+      </Text>
+
+      <Text style={styles.statusMessage}>
+        Phase 11A enables LiveKit video on the web dashboard.
+      </Text>
+    </View>
+  );
+}
+
+function WebLiveKitViewer({
+  cameraId,
+  serverUrl,
+}: LiveKitViewerProps) {
+  const videoRef = useRef<any>(null);
+  const roomRef = useRef<Room | null>(null);
+  const controlSocketRef =
+    useRef<Socket | null>(null);
+  const attachedTrackRef =
+    useRef<RemoteVideoTrack | null>(null);
+
+  const [status, setStatus] =
+    useState<ViewerStatus>("requesting-token");
+
+  const [message, setMessage] =
+    useState("Requesting secure WebRTC access");
+
+  useEffect(() => {
+    let cancelled = false;
+    const abortController =
+      new AbortController();
+
+    const viewerId =
+      `webrtc-viewer-${Date.now()}-${Math.random()
+        .toString(36)
+        .slice(2, 8)}`;
+
+    const controlSocket = io(serverUrl, {
+      transports: ["websocket"],
+      auth: getDashboardSocketAuth(),
+      reconnection: true,
+    });
+
+    controlSocketRef.current = controlSocket;
+
+    controlSocket.on("connect", () => {
+      controlSocket.emit("viewer:watch", {
+        viewerId,
+        cameraId,
+        transport: "webrtc",
+      });
+    });
+
+    const detachCurrentTrack = (): void => {
+      const track = attachedTrackRef.current;
+      const video = videoRef.current;
+
+      if (track && video) {
+        track.detach(video);
+      }
+
+      attachedTrackRef.current = null;
+
+      if (video) {
+        video.srcObject = null;
+      }
+    };
+
+    const attachTrack = (
+      track: RemoteVideoTrack,
+      participantIdentity: string,
+    ): void => {
+      if (
+        participantIdentity !==
+        `camera:${cameraId}`
+      ) {
+        return;
+      }
+
+      const video = videoRef.current;
+
+      if (!video) {
+        return;
+      }
+
+      detachCurrentTrack();
+      track.attach(video);
+      attachedTrackRef.current = track;
+
+      setStatus("live");
+      setMessage("WebRTC live stream");
+    };
+
+    const connect = async (): Promise<void> => {
+      try {
+        setStatus("requesting-token");
+        setMessage(
+          "Requesting secure WebRTC access",
+        );
+
+        const tokenResponse = await fetch(
+          `${serverUrl}/webrtc/token/viewer`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...getDashboardSecurityHeaders(),
+            },
+            body: JSON.stringify({
+              cameraId,
+            }),
+            signal: abortController.signal,
+          },
+        );
+
+        const credentials =
+          (await tokenResponse.json()) as
+            | LiveKitCredentials
+            | { error?: string };
+
+        if (!tokenResponse.ok) {
+          throw new Error(
+            "error" in credentials
+              ? credentials.error ||
+                  "Viewer token request failed"
+              : "Viewer token request failed",
+          );
+        }
+
+        if (
+          !("server_url" in credentials) ||
+          !("participant_token" in credentials)
+        ) {
+          throw new Error(
+            "Invalid LiveKit token response",
+          );
+        }
+
+        if (cancelled) {
+          return;
+        }
+
+        const room = new Room({
+          adaptiveStream: true,
+          dynacast: true,
+        });
+
+        roomRef.current = room;
+
+        room.on(
+          RoomEvent.TrackSubscribed,
+          (track, _publication, participant) => {
+            if (track.kind !== Track.Kind.Video) {
+              return;
+            }
+
+            attachTrack(
+              track as RemoteVideoTrack,
+              participant.identity,
+            );
+          },
+        );
+
+        room.on(
+          RoomEvent.TrackUnsubscribed,
+          (track) => {
+            if (
+              attachedTrackRef.current === track
+            ) {
+              detachCurrentTrack();
+              setStatus("waiting-camera");
+              setMessage(
+                "Camera video track unavailable",
+              );
+            }
+          },
+        );
+
+        room.on(
+          RoomEvent.ParticipantDisconnected,
+          (participant) => {
+            if (
+              participant.identity ===
+              `camera:${cameraId}`
+            ) {
+              detachCurrentTrack();
+              setStatus("offline");
+              setMessage(
+                "Camera publisher offline",
+              );
+            }
+          },
+        );
+
+        room.on(RoomEvent.Reconnecting, () => {
+          setStatus("reconnecting");
+          setMessage("WebRTC reconnecting");
+        });
+
+        room.on(RoomEvent.Reconnected, () => {
+          setStatus("waiting-camera");
+          setMessage(
+            "Reconnected — waiting for camera video",
+          );
+        });
+
+        room.on(RoomEvent.Disconnected, () => {
+          detachCurrentTrack();
+          setStatus("offline");
+          setMessage("WebRTC room disconnected");
+        });
+
+        setStatus("connecting");
+        setMessage("Connecting to LiveKit");
+
+        await room.connect(
+          credentials.server_url,
+          credentials.participant_token,
+          {
+            autoSubscribe: true,
+          },
+        );
+
+        if (cancelled) {
+          room.disconnect();
+          return;
+        }
+
+        setStatus("waiting-camera");
+        setMessage(
+          "Connected — waiting for camera publisher",
+        );
+
+        const existingCamera =
+          room.remoteParticipants.get(
+            `camera:${cameraId}`,
+          );
+
+        existingCamera?.trackPublications.forEach(
+          (publication) => {
+            if (
+              publication.track?.kind ===
+              Track.Kind.Video
+            ) {
+              attachTrack(
+                publication.track as
+                  RemoteVideoTrack,
+                existingCamera.identity,
+              );
+            }
+          },
+        );
+      } catch (error: any) {
+        if (
+          cancelled ||
+          error?.name === "AbortError"
+        ) {
+          return;
+        }
+
+        console.error(
+          "❌ LiveKit viewer failed:",
+          error,
+        );
+
+        setStatus("error");
+        setMessage(
+          error?.message ||
+            "WebRTC viewer failed",
+        );
+      }
+    };
+
+    void connect();
+
+    return () => {
+      cancelled = true;
+      abortController.abort();
+      detachCurrentTrack();
+
+      controlSocket.emit("viewer:unwatch", {
+        viewerId,
+        cameraId,
+      });
+      controlSocket.disconnect();
+      controlSocketRef.current = null;
+
+      const room = roomRef.current;
+      roomRef.current = null;
+      room?.disconnect();
+    };
+  }, [cameraId, serverUrl]);
+
+  const WebVideo: any = "video";
+
+  return (
+    <View style={styles.container}>
+      <WebVideo
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted
+        style={{
+          width: "100%",
+          height: "100%",
+          objectFit: "contain",
+          backgroundColor: "#000000",
+        }}
+      />
+
+      {status !== "live" && (
+        <View style={styles.overlay}>
+          <Text style={styles.statusTitle}>
+            {status === "error"
+              ? "WebRTC error"
+              : status === "offline"
+                ? "Camera offline"
+                : "Connecting live camera"}
+          </Text>
+
+          <Text style={styles.statusMessage}>
+            {message}
+          </Text>
+        </View>
+      )}
+
+      {status === "live" && (
+        <View style={styles.liveBadge}>
+          <View style={styles.liveDot} />
+          <Text style={styles.liveText}>
+            WEBRTC LIVE
+          </Text>
+        </View>
+      )}
+    </View>
+  );
+}
+
+export default function LiveKitViewer(
+  props: LiveKitViewerProps,
+) {
+  if (Platform.OS !== "web") {
+    return <NativeDashboardFallback />;
+  }
+
+  return <WebLiveKitViewer {...props} />;
+}
+
+const styles = StyleSheet.create({
+  container: {
+    width: "100%",
+    height: "100%",
+    position: "relative",
+    overflow: "hidden",
+    backgroundColor: "#000000",
+  },
+
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+    backgroundColor: "rgba(0,0,0,0.78)",
+  },
+
+  statusTitle: {
+    color: "#FFFFFF",
+    fontSize: 18,
+    fontWeight: "700",
+    marginBottom: 8,
+    textAlign: "center",
+  },
+
+  statusMessage: {
+    color: "#CBD5E1",
+    fontSize: 14,
+    textAlign: "center",
+  },
+
+  liveBadge: {
+    position: "absolute",
+    top: 12,
+    left: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+    borderRadius: 8,
+    backgroundColor: "rgba(5,150,105,0.92)",
+  },
+
+  liveDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "#FFFFFF",
+  },
+
+  liveText: {
+    color: "#FFFFFF",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+});
+
+// PATCH_11G_WEBRTC_VIEWER_CONTROL

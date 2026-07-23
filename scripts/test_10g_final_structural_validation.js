@@ -1,0 +1,279 @@
+"use strict";
+
+const fs = require("fs");
+const path = require("path");
+
+const root = path.resolve(__dirname, "..");
+
+const phone = fs.readFileSync(
+  path.join(
+    root,
+    "smartphone-camera-app",
+    "components",
+    "SimpleCameraStream.tsx",
+  ),
+  "utf8",
+);
+
+const server = fs.readFileSync(
+  path.join(root, "server.js"),
+  "utf8",
+);
+
+function parseCall(source, start) {
+  const openParen = source.indexOf("(", start);
+
+  if (openParen < 0) {
+    return null;
+  }
+
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+
+  for (
+    let index = openParen;
+    index < source.length;
+    index += 1
+  ) {
+    const char = source[index];
+
+    if (quote !== null) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === quote) {
+        quote = null;
+      }
+
+      continue;
+    }
+
+    if (
+      char === '"' ||
+      char === "'" ||
+      char === "`"
+    ) {
+      quote = char;
+      continue;
+    }
+
+    if (char === "(") {
+      depth += 1;
+    } else if (char === ")") {
+      depth -= 1;
+
+      if (depth === 0) {
+        return {
+          start,
+          end: index + 1,
+          text: source.slice(start, index + 1),
+        };
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractListener(source, eventName) {
+  const patterns = [
+    `socket.on("${eventName}"`,
+    `socket.on(\n    "${eventName}"`,
+  ];
+
+  let start = -1;
+
+  for (const pattern of patterns) {
+    start = source.indexOf(pattern);
+
+    if (start >= 0) {
+      break;
+    }
+  }
+
+  if (start < 0) {
+    throw new Error(
+      `Listener not found: ${eventName}`,
+    );
+  }
+
+  let end = source.indexOf(
+    "\n  socket.on(",
+    start + 20,
+  );
+
+  if (end < 0) {
+    end = Math.min(
+      source.length,
+      start + 7000,
+    );
+  }
+
+  return source.slice(start, end);
+}
+
+const blocks = [];
+const emitPattern =
+  /socketRef\.current\?\.emit\s*\(/g;
+
+for (
+  let match = emitPattern.exec(phone);
+  match;
+  match = emitPattern.exec(phone)
+) {
+  const block = parseCall(phone, match.index);
+
+  if (
+    block &&
+    /["']camera:recording-status["']/.test(
+      block.text,
+    )
+  ) {
+    blocks.push({
+      ...block,
+      state:
+        /\bisRecording\s*:\s*true\b/.test(
+          block.text,
+        )
+          ? true
+          : /\bisRecording\s*:\s*false\b/.test(
+              block.text,
+            )
+            ? false
+            : null,
+    });
+  }
+}
+
+const startBlock = blocks.find(
+  (block) => block.state === true,
+);
+
+const stopBlock = blocks.find(
+  (block) => block.state === false,
+);
+
+const recordAsyncMatch = phone.match(
+  /await\s+recordingCamera\.recordAsync\s*\(/,
+);
+
+const recordAsyncIndex = recordAsyncMatch
+  ? phone.indexOf(recordAsyncMatch[0])
+  : -1;
+
+/*
+ * Important:
+ * There are other nativeRecordingActiveRef.current = false statements
+ * earlier in this component, such as stop/cancel helpers.
+ *
+ * The correct cleanup for this validation is the first cleanup statement
+ * AFTER the specific recordAsync call being tested.
+ */
+const afterRecordAsync =
+  recordAsyncIndex >= 0
+    ? phone.slice(recordAsyncIndex)
+    : "";
+
+const cleanupAfterRecordMatch =
+  afterRecordAsync.match(
+    /nativeRecordingActiveRef\.current\s*=\s*false\s*;/,
+  );
+
+const cleanupIndex =
+  cleanupAfterRecordMatch &&
+  typeof cleanupAfterRecordMatch.index === "number"
+    ? recordAsyncIndex +
+      cleanupAfterRecordMatch.index
+    : -1;
+
+const recordingHandler = extractListener(
+  server,
+  "camera:recording-status",
+);
+
+const healthHandler = extractListener(
+  server,
+  "camera:health",
+);
+
+const checks = {
+  exactlyTwoRecordingStatusEvents:
+    blocks.length === 2,
+
+  oneStartAndOneStop:
+    Boolean(startBlock) &&
+    Boolean(stopBlock),
+
+  videoAssignedFromRecordAsync:
+    /video\s*=\s*await\s+recordingCamera\.recordAsync\s*\(/.test(
+      phone,
+    ),
+
+  startEventBeforeRecordAsync:
+    Boolean(startBlock) &&
+    recordAsyncIndex >= 0 &&
+    startBlock.start < recordAsyncIndex,
+
+  stopEventAfterRecordAsync:
+    Boolean(stopBlock) &&
+    recordAsyncIndex >= 0 &&
+    stopBlock.start > recordAsyncIndex,
+
+  cleanupLocatedAfterRecordAsync:
+    cleanupIndex > recordAsyncIndex,
+
+  stopEventBeforeMatchingNativeCleanup:
+    Boolean(stopBlock) &&
+    cleanupIndex >= 0 &&
+    stopBlock.start < cleanupIndex,
+
+  explicitHandlerUsesPayload:
+    /camera\.isRecording\s*=\s*Boolean\(payload\.isRecording\)\s*;/.test(
+      recordingHandler,
+    ),
+
+  healthHandlerPreservesState:
+    /camera\.isRecording\s*=\s*Boolean\(camera\.isRecording\)\s*;/.test(
+      healthHandler,
+    ),
+
+  healthHandlerDoesNotTrustPayload:
+    !/camera\.isRecording\s*=\s*Boolean\(payload\.isRecording\)\s*;/.test(
+      healthHandler,
+    ),
+
+  recoveryMarkerPresent:
+    phone.includes(
+      "PATCH_10G_RECOVER_AND_REPAIR_NATIVE_STATE",
+    ),
+
+  assignmentMarkerPresent:
+    phone.includes(
+      "PATCH_10G_I_FIX_VIDEO_ASSIGNMENT_ORDER",
+    ),
+};
+
+const ok = Object.values(checks).every(Boolean);
+
+console.log(
+  JSON.stringify(
+    {
+      ok,
+      checks,
+      eventPositions: {
+        start: startBlock?.start ?? null,
+        recordAsync: recordAsyncIndex,
+        stop: stopBlock?.start ?? null,
+        matchingNativeCleanup: cleanupIndex,
+      },
+    },
+    null,
+    2,
+  ),
+);
+
+if (!ok) {
+  process.exitCode = 1;
+}

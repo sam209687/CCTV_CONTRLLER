@@ -1,0 +1,286 @@
+
+Continuous local CCTV recording
+  Camera: cam-1772515015057
+  Segment duration: 1800s
+  Display mode: landscape
+  Fit mode: cover
+  Stop safely with Ctrl+C or stop_continuous_recorder.sh
+
+2026-07-23 12:42:48,008 INFO cctv-continuous-recorder: Connecting to room camera-cam-1772515015057
+VAAPI is supported.
+2026-07-23 12:42:48,087 INFO livekit: livekit_api::signal_client::signal_stream:104:livekit_api::signal_client::signal_stream - connecting to wss://root-seed-cctv-dev-2kgrd34f.livekit.cloud/rtc?sdk=python&os=Ubuntu&os_version=24.4.0&device_model=81UT&protocol=17&client_protocol=1&auto_subscribe=1&adaptive_stream=0&version=1.1.13&capabilities=CAP_PACKET_TRAILER
+2026-07-23 12:42:49,129 INFO cctv-continuous-recorder: Requested HIGH simulcast layer for track TR_VC7VJVewYCDuka
+2026-07-23 12:42:49,132 INFO livekit: livekit::room::participant::remote_participant:464:livekit::room::participant::remote_participant - subscriber: sending UpdateTrackSettings to SFU: track=TR_VC7VJVewYCDuka, quality=Ok(High)
+2026-07-23 12:42:49,284 INFO cctv-continuous-recorder: Starting segment 1: 1800s, 1280x720, mode=landscape, fit=cover
+2026-07-23 12:42:49,285 INFO cctv-continuous-recorder: Input layer 270x480 rotation=0 -> 1280x720 cover
+2026-07-23 12:42:50,718 INFO cctv-continuous-recorder: Input layer 540x960 rotation=0 -> 1280x720 cover
+2026-07-23 12:43:03,121 INFO cctv-continuous-recorder: Input layer 135x240 rotation=0 -> 1280x720 cover
+2026-07-23 12:43:05,717 INFO cctv-continuous-recorder: Input layer 90x160 rotation=0 -> 1280x720 cover
+2026-07-23 12:43:09,959 INFO cctv-continuous-recorder: Segment 1: 100 frames, 20.7s elapsed
+2026-07-23 12:43:15,847 INFO cctv-continuous-recorder: Input layer 180x320 rotation=0 -> 1280x720 cover
+2026-07-23 12:43:19,962 INFO cctv-continuous-recorder: Segment 1: 200 frames, 30.7s elapsed
+2026-07-23 12:43:20,843 INFO cctv-continuous-recorder: Input layer 270x480 rotation=0 -> 1280x720 cover
+2026-07-23 12:43:22,034 INFO cctv-continuous-recorder: Input layer 135x240 rotation=0 -> 1280x720 cover
+2026-07-23 12:43:41,464 INFO cctv-continuous-recorder: Segment 1: 300 frames, 52.2s elapsed
+2026-07-23 12:43:45,706 INFO cctv-continuous-recorder: Input layer 270x480 rotation=0 -> 1280x720 cover
+2026-07-23 12:43:45,847 INFO cctv-continuous-recorder: Input layer 540x960 rotation=0 -> 1280x720 cover
+2026-07-23 12:43:51,619 INFO cctv-continuous-recorder: Segment 1: 400 frames, 62.3s elapsed
+2026-07-23 12:43:56,806 INFO cctv-continuous-recorder: Input layer 180x320 rotation=0 -> 1280x720 cover
+2026-07-23 12:44:02,274 INFO cctv-continuous-recorder: Segment 1: 500 frames, 73.0s elapsed
+2026-07-23 12:44:12,350 INFO cctv-continuous-recorder: Segment 1: 600 frames, 83.1s elapsed
+2026-07-23 12:44:22,391 INFO cctv-continuous-recorder: Segment 1: 700 frames, 93.1s elapsed
+2026-07-23 12:44:32,417 INFO cctv-continuous-recorder: Segment 1: 800 frames, 103.1s elapsed
+2026-07-23 12:44:41,386 INFO cctv-continuous-recorder: Input layer 270x480 rotation=0 -> 1280x720 cover
+2026-07-23 12:44:42,329 INFO cctv-continuous-recorder: Segment 1: 900 frames, 113.0s elapsed
+2026-07-23 12:44:51,377 INFO cctv-continuous-recorder: Input layer 540x960 rotation=0 -> 1280x720 cover
+2026-07-23 12:44:52,221 INFO cctv-continuous-recorder: Segment 1: 1000 frames, 122.9s elapsed
+2026-07-23 12:45:02,274 INFO cctv-continuous-recorder: Input layer 180x320 rotation=0 -> 1280x720 cover
+2026-07-23 12:45:02,737 INFO cctv-continuous-recorder: Segment 1: 1100 frames, 133.5s elapsed
+2026-07-23 12:45:12,788 INFO cctv-continuous-recorder: Segment 1: 1200 frames, 143.5s elapsed
+2026-07-23 12:45:22,842 INFO cctv-continuous-recorder: Segment 1: 1300 frames, 153.6s elapsed
+2026-07-23 12:45:32,815 INFO cctv-continuous-recorder: Segment 1: 1400 frames, 163.5s elapsed
+2026-07-23 12:45:42,830 INFO cctv-continuous-recorder: Segment 1: 1500 frames, 173.5s elapsed
+2026-07-23 12:45:52,794 INFO cctv-continuous-recorder: Segment 1: 1600 frames, 183.5s elapsed
+2026-07-23 12:46:02,851 INFO cctv-continuous-recorder: Segment 1: 1700 frames, 193.6s elapsed
+2026-07-23 12:46:12,851 INFO cctv-continuous-recorder: Segment 1: 1800 frames, 203.6s elapsed
+2026-07-23 12:46:22,795 INFO cctv-continuous-recorder: Segment 1: 1900 frames, 213.5s elapsed
+2026-07-23 12:46:32,841 INFO cctv-continuous-recorder: Segment 1: 2000 frames, 223.6s elapsed
+2026-07-23 12:46:42,817 INFO cctv-continuous-recorder: Segment 1: 2100 frames, 233.5s elapsed
+2026-07-23 12:46:52,796 INFO cctv-continuous-recorder: Segment 1: 2200 frames, 243.5s elapsed
+2026-07-23 12:47:02,798 INFO cctv-continuous-recorder: Segment 1: 2300 frames, 253.5s elapsed
+2026-07-23 12:47:12,772 INFO cctv-continuous-recorder: Segment 1: 2400 frames, 263.5s elapsed
+2026-07-23 12:47:21,981 INFO cctv-continuous-recorder: Input layer 270x480 rotation=0 -> 1280x720 cover
+2026-07-23 12:47:22,805 INFO cctv-continuous-recorder: Segment 1: 2500 frames, 273.5s elapsed
+2026-07-23 12:47:31,775 INFO cctv-continuous-recorder: Input layer 540x960 rotation=0 -> 1280x720 cover
+2026-07-23 12:47:32,665 INFO cctv-continuous-recorder: Segment 1: 2600 frames, 283.4s elapsed
+2026-07-23 12:47:42,651 INFO cctv-continuous-recorder: Input layer 180x320 rotation=0 -> 1280x720 cover
+2026-07-23 12:47:43,110 INFO cctv-continuous-recorder: Segment 1: 2700 frames, 293.8s elapsed
+2026-07-23 12:47:53,192 INFO cctv-continuous-recorder: Segment 1: 2800 frames, 303.9s elapsed
+2026-07-23 12:48:03,270 INFO cctv-continuous-recorder: Segment 1: 2900 frames, 314.0s elapsed
+2026-07-23 12:48:13,205 INFO cctv-continuous-recorder: Segment 1: 3000 frames, 323.9s elapsed
+2026-07-23 12:48:23,263 INFO cctv-continuous-recorder: Segment 1: 3100 frames, 334.0s elapsed
+2026-07-23 12:48:33,232 INFO cctv-continuous-recorder: Segment 1: 3200 frames, 343.9s elapsed
+2026-07-23 12:48:43,246 INFO cctv-continuous-recorder: Segment 1: 3300 frames, 354.0s elapsed
+2026-07-23 12:48:53,326 INFO cctv-continuous-recorder: Segment 1: 3400 frames, 364.0s elapsed
+2026-07-23 12:49:03,319 INFO cctv-continuous-recorder: Segment 1: 3500 frames, 374.0s elapsed
+2026-07-23 12:49:13,316 INFO cctv-continuous-recorder: Segment 1: 3600 frames, 384.0s elapsed
+2026-07-23 12:49:23,304 INFO cctv-continuous-recorder: Segment 1: 3700 frames, 394.0s elapsed
+2026-07-23 12:49:33,605 INFO cctv-continuous-recorder: Segment 1: 3800 frames, 404.3s elapsed
+2026-07-23 12:49:43,590 INFO cctv-continuous-recorder: Segment 1: 3900 frames, 414.3s elapsed
+2026-07-23 12:49:53,591 INFO cctv-continuous-recorder: Segment 1: 4000 frames, 424.3s elapsed
+2026-07-23 12:50:03,595 INFO cctv-continuous-recorder: Segment 1: 4100 frames, 434.3s elapsed
+2026-07-23 12:50:13,556 INFO cctv-continuous-recorder: Segment 1: 4200 frames, 444.3s elapsed
+2026-07-23 12:50:23,564 INFO cctv-continuous-recorder: Segment 1: 4300 frames, 454.3s elapsed
+2026-07-23 12:50:33,857 INFO cctv-continuous-recorder: Segment 1: 4400 frames, 464.6s elapsed
+2026-07-23 12:50:43,899 INFO cctv-continuous-recorder: Segment 1: 4500 frames, 474.6s elapsed
+2026-07-23 12:50:53,946 INFO cctv-continuous-recorder: Segment 1: 4600 frames, 484.7s elapsed
+2026-07-23 12:51:03,936 INFO cctv-continuous-recorder: Segment 1: 4700 frames, 494.7s elapsed
+2026-07-23 12:51:13,942 INFO cctv-continuous-recorder: Segment 1: 4800 frames, 504.7s elapsed
+2026-07-23 12:51:22,416 INFO cctv-continuous-recorder: Input layer 270x480 rotation=0 -> 1280x720 cover
+2026-07-23 12:51:23,937 INFO cctv-continuous-recorder: Segment 1: 4900 frames, 514.7s elapsed
+2026-07-23 12:51:32,384 INFO cctv-continuous-recorder: Input layer 540x960 rotation=0 -> 1280x720 cover
+2026-07-23 12:51:33,787 INFO cctv-continuous-recorder: Segment 1: 5000 frames, 524.5s elapsed
+2026-07-23 12:51:43,340 INFO cctv-continuous-recorder: Input layer 180x320 rotation=0 -> 1280x720 cover
+2026-07-23 12:51:44,438 INFO cctv-continuous-recorder: Segment 1: 5100 frames, 535.2s elapsed
+2026-07-23 12:51:54,487 INFO cctv-continuous-recorder: Segment 1: 5200 frames, 545.2s elapsed
+2026-07-23 12:52:04,481 INFO cctv-continuous-recorder: Segment 1: 5300 frames, 555.2s elapsed
+2026-07-23 12:52:14,546 INFO cctv-continuous-recorder: Segment 1: 5400 frames, 565.3s elapsed
+2026-07-23 12:52:24,521 INFO cctv-continuous-recorder: Segment 1: 5500 frames, 575.2s elapsed
+2026-07-23 12:52:34,530 INFO cctv-continuous-recorder: Segment 1: 5600 frames, 585.2s elapsed
+2026-07-23 12:52:44,519 INFO cctv-continuous-recorder: Segment 1: 5700 frames, 595.2s elapsed
+2026-07-23 12:52:54,524 INFO cctv-continuous-recorder: Segment 1: 5800 frames, 605.2s elapsed
+2026-07-23 12:53:04,521 INFO cctv-continuous-recorder: Segment 1: 5900 frames, 615.2s elapsed
+2026-07-23 12:53:14,543 INFO cctv-continuous-recorder: Segment 1: 6000 frames, 625.3s elapsed
+2026-07-23 12:53:24,524 INFO cctv-continuous-recorder: Segment 1: 6100 frames, 635.2s elapsed
+2026-07-23 12:53:34,515 INFO cctv-continuous-recorder: Segment 1: 6200 frames, 645.2s elapsed
+2026-07-23 12:53:44,468 INFO cctv-continuous-recorder: Segment 1: 6300 frames, 655.2s elapsed
+2026-07-23 12:53:54,504 INFO cctv-continuous-recorder: Segment 1: 6400 frames, 665.2s elapsed
+2026-07-23 12:54:04,515 INFO cctv-continuous-recorder: Segment 1: 6500 frames, 675.2s elapsed
+2026-07-23 12:54:14,514 INFO cctv-continuous-recorder: Segment 1: 6600 frames, 685.2s elapsed
+2026-07-23 12:54:24,524 INFO cctv-continuous-recorder: Segment 1: 6700 frames, 695.2s elapsed
+2026-07-23 12:54:34,522 INFO cctv-continuous-recorder: Segment 1: 6800 frames, 705.2s elapsed
+2026-07-23 12:54:44,856 INFO cctv-continuous-recorder: Segment 1: 6900 frames, 715.6s elapsed
+2026-07-23 12:54:54,797 INFO cctv-continuous-recorder: Segment 1: 7000 frames, 725.5s elapsed
+2026-07-23 12:55:04,754 INFO cctv-continuous-recorder: Segment 1: 7100 frames, 735.5s elapsed
+2026-07-23 12:55:14,745 INFO cctv-continuous-recorder: Segment 1: 7200 frames, 745.5s elapsed
+2026-07-23 12:55:22,775 INFO cctv-continuous-recorder: Input layer 270x480 rotation=0 -> 1280x720 cover
+2026-07-23 12:55:24,722 INFO cctv-continuous-recorder: Segment 1: 7300 frames, 755.4s elapsed
+2026-07-23 12:55:32,865 INFO cctv-continuous-recorder: Input layer 540x960 rotation=0 -> 1280x720 cover
+2026-07-23 12:55:34,676 INFO cctv-continuous-recorder: Segment 1: 7400 frames, 765.4s elapsed
+2026-07-23 12:55:43,799 INFO cctv-continuous-recorder: Input layer 180x320 rotation=0 -> 1280x720 cover
+2026-07-23 12:55:45,293 INFO cctv-continuous-recorder: Segment 1: 7500 frames, 776.0s elapsed
+2026-07-23 12:55:55,364 INFO cctv-continuous-recorder: Segment 1: 7600 frames, 786.1s elapsed
+2026-07-23 12:56:05,357 INFO cctv-continuous-recorder: Segment 1: 7700 frames, 796.1s elapsed
+2026-07-23 12:56:15,783 INFO cctv-continuous-recorder: Segment 1: 7800 frames, 806.5s elapsed
+2026-07-23 12:56:25,583 INFO cctv-continuous-recorder: Segment 1: 7900 frames, 816.3s elapsed
+2026-07-23 12:56:35,571 INFO cctv-continuous-recorder: Segment 1: 8000 frames, 826.3s elapsed
+2026-07-23 12:56:45,550 INFO cctv-continuous-recorder: Segment 1: 8100 frames, 836.3s elapsed
+2026-07-23 12:56:55,559 INFO cctv-continuous-recorder: Segment 1: 8200 frames, 846.3s elapsed
+2026-07-23 12:57:05,531 INFO cctv-continuous-recorder: Segment 1: 8300 frames, 856.2s elapsed
+2026-07-23 12:57:15,490 INFO cctv-continuous-recorder: Segment 1: 8400 frames, 866.2s elapsed
+2026-07-23 12:57:25,542 INFO cctv-continuous-recorder: Segment 1: 8500 frames, 876.3s elapsed
+2026-07-23 12:57:35,501 INFO cctv-continuous-recorder: Segment 1: 8600 frames, 886.2s elapsed
+2026-07-23 12:57:45,581 INFO cctv-continuous-recorder: Segment 1: 8700 frames, 896.3s elapsed
+2026-07-23 12:57:55,523 INFO cctv-continuous-recorder: Segment 1: 8800 frames, 906.2s elapsed
+2026-07-23 12:58:05,568 INFO cctv-continuous-recorder: Segment 1: 8900 frames, 916.3s elapsed
+2026-07-23 12:58:15,533 INFO cctv-continuous-recorder: Segment 1: 9000 frames, 926.2s elapsed
+2026-07-23 12:58:25,537 INFO cctv-continuous-recorder: Segment 1: 9100 frames, 936.3s elapsed
+2026-07-23 12:58:35,511 INFO cctv-continuous-recorder: Segment 1: 9200 frames, 946.2s elapsed
+2026-07-23 12:58:45,507 INFO cctv-continuous-recorder: Segment 1: 9300 frames, 956.2s elapsed
+2026-07-23 12:58:55,510 INFO cctv-continuous-recorder: Segment 1: 9400 frames, 966.2s elapsed
+2026-07-23 12:59:05,535 INFO cctv-continuous-recorder: Segment 1: 9500 frames, 976.3s elapsed
+2026-07-23 12:59:15,520 INFO cctv-continuous-recorder: Segment 1: 9600 frames, 986.2s elapsed
+2026-07-23 12:59:23,444 INFO cctv-continuous-recorder: Input layer 270x480 rotation=0 -> 1280x720 cover
+2026-07-23 12:59:25,641 INFO cctv-continuous-recorder: Segment 1: 9700 frames, 996.4s elapsed
+2026-07-23 12:59:33,335 INFO cctv-continuous-recorder: Input layer 540x960 rotation=0 -> 1280x720 cover
+2026-07-23 12:59:35,493 INFO cctv-continuous-recorder: Segment 1: 9800 frames, 1006.2s elapsed
+2026-07-23 12:59:44,292 INFO cctv-continuous-recorder: Input layer 180x320 rotation=0 -> 1280x720 cover
+2026-07-23 12:59:46,161 INFO cctv-continuous-recorder: Segment 1: 9900 frames, 1016.9s elapsed
+2026-07-23 12:59:56,219 INFO cctv-continuous-recorder: Segment 1: 10000 frames, 1026.9s elapsed
+2026-07-23 13:00:06,206 INFO cctv-continuous-recorder: Segment 1: 10100 frames, 1036.9s elapsed
+2026-07-23 13:00:16,194 INFO cctv-continuous-recorder: Segment 1: 10200 frames, 1046.9s elapsed
+2026-07-23 13:00:26,204 INFO cctv-continuous-recorder: Segment 1: 10300 frames, 1056.9s elapsed
+2026-07-23 13:00:36,233 INFO cctv-continuous-recorder: Segment 1: 10400 frames, 1066.9s elapsed
+2026-07-23 13:00:46,305 INFO cctv-continuous-recorder: Segment 1: 10500 frames, 1077.0s elapsed
+2026-07-23 13:00:56,280 INFO cctv-continuous-recorder: Segment 1: 10600 frames, 1087.0s elapsed
+2026-07-23 13:01:06,273 INFO cctv-continuous-recorder: Segment 1: 10700 frames, 1097.0s elapsed
+2026-07-23 13:01:16,280 INFO cctv-continuous-recorder: Segment 1: 10800 frames, 1107.0s elapsed
+2026-07-23 13:01:26,267 INFO cctv-continuous-recorder: Segment 1: 10900 frames, 1117.0s elapsed
+2026-07-23 13:01:36,307 INFO cctv-continuous-recorder: Segment 1: 11000 frames, 1127.0s elapsed
+2026-07-23 13:01:46,297 INFO cctv-continuous-recorder: Segment 1: 11100 frames, 1137.0s elapsed
+2026-07-23 13:01:56,310 INFO cctv-continuous-recorder: Segment 1: 11200 frames, 1147.0s elapsed
+2026-07-23 13:02:06,329 INFO cctv-continuous-recorder: Segment 1: 11300 frames, 1157.0s elapsed
+2026-07-23 13:02:16,310 INFO cctv-continuous-recorder: Segment 1: 11400 frames, 1167.0s elapsed
+2026-07-23 13:02:26,279 INFO cctv-continuous-recorder: Segment 1: 11500 frames, 1177.0s elapsed
+2026-07-23 13:02:36,305 INFO cctv-continuous-recorder: Segment 1: 11600 frames, 1187.0s elapsed
+2026-07-23 13:02:46,313 INFO cctv-continuous-recorder: Segment 1: 11700 frames, 1197.0s elapsed
+2026-07-23 13:02:56,319 INFO cctv-continuous-recorder: Segment 1: 11800 frames, 1207.0s elapsed
+2026-07-23 13:03:06,258 INFO cctv-continuous-recorder: Segment 1: 11900 frames, 1217.0s elapsed
+2026-07-23 13:03:16,318 INFO cctv-continuous-recorder: Segment 1: 12000 frames, 1227.0s elapsed
+2026-07-23 13:03:23,788 INFO cctv-continuous-recorder: Input layer 270x480 rotation=0 -> 1280x720 cover
+2026-07-23 13:03:26,318 INFO cctv-continuous-recorder: Segment 1: 12100 frames, 1237.0s elapsed
+2026-07-23 13:03:33,890 INFO cctv-continuous-recorder: Input layer 540x960 rotation=0 -> 1280x720 cover
+2026-07-23 13:03:36,224 INFO cctv-continuous-recorder: Segment 1: 12200 frames, 1246.9s elapsed
+2026-07-23 13:03:44,853 INFO cctv-continuous-recorder: Input layer 180x320 rotation=0 -> 1280x720 cover
+2026-07-23 13:03:47,026 INFO cctv-continuous-recorder: Segment 1: 12300 frames, 1257.7s elapsed
+2026-07-23 13:03:57,090 INFO cctv-continuous-recorder: Segment 1: 12400 frames, 1267.8s elapsed
+2026-07-23 13:04:07,128 INFO cctv-continuous-recorder: Segment 1: 12500 frames, 1277.8s elapsed
+2026-07-23 13:04:17,088 INFO cctv-continuous-recorder: Segment 1: 12600 frames, 1287.8s elapsed
+2026-07-23 13:04:27,072 INFO cctv-continuous-recorder: Segment 1: 12700 frames, 1297.8s elapsed
+2026-07-23 13:04:37,426 INFO cctv-continuous-recorder: Segment 1: 12800 frames, 1308.1s elapsed
+2026-07-23 13:04:47,446 INFO cctv-continuous-recorder: Segment 1: 12900 frames, 1318.2s elapsed
+2026-07-23 13:04:57,419 INFO cctv-continuous-recorder: Segment 1: 13000 frames, 1328.1s elapsed
+2026-07-23 13:05:07,382 INFO cctv-continuous-recorder: Segment 1: 13100 frames, 1338.1s elapsed
+2026-07-23 13:05:17,394 INFO cctv-continuous-recorder: Segment 1: 13200 frames, 1348.1s elapsed
+2026-07-23 13:05:27,386 INFO cctv-continuous-recorder: Segment 1: 13300 frames, 1358.1s elapsed
+2026-07-23 13:05:37,394 INFO cctv-continuous-recorder: Segment 1: 13400 frames, 1368.1s elapsed
+2026-07-23 13:05:47,405 INFO cctv-continuous-recorder: Segment 1: 13500 frames, 1378.1s elapsed
+2026-07-23 13:05:57,796 INFO cctv-continuous-recorder: Segment 1: 13600 frames, 1388.5s elapsed
+2026-07-23 13:06:07,766 INFO cctv-continuous-recorder: Segment 1: 13700 frames, 1398.5s elapsed
+2026-07-23 13:06:17,735 INFO cctv-continuous-recorder: Segment 1: 13800 frames, 1408.5s elapsed
+2026-07-23 13:06:27,756 INFO cctv-continuous-recorder: Segment 1: 13900 frames, 1418.5s elapsed
+2026-07-23 13:06:37,797 INFO cctv-continuous-recorder: Segment 1: 14000 frames, 1428.5s elapsed
+2026-07-23 13:06:47,800 INFO cctv-continuous-recorder: Segment 1: 14100 frames, 1438.5s elapsed
+2026-07-23 13:06:57,793 INFO cctv-continuous-recorder: Segment 1: 14200 frames, 1448.5s elapsed
+2026-07-23 13:07:07,759 INFO cctv-continuous-recorder: Segment 1: 14300 frames, 1458.5s elapsed
+2026-07-23 13:07:17,782 INFO cctv-continuous-recorder: Segment 1: 14400 frames, 1468.5s elapsed
+2026-07-23 13:07:24,499 INFO cctv-continuous-recorder: Input layer 270x480 rotation=0 -> 1280x720 cover
+2026-07-23 13:07:27,839 INFO cctv-continuous-recorder: Segment 1: 14500 frames, 1478.6s elapsed
+2026-07-23 13:07:34,388 INFO cctv-continuous-recorder: Input layer 540x960 rotation=0 -> 1280x720 cover
+2026-07-23 13:07:37,720 INFO cctv-continuous-recorder: Segment 1: 14600 frames, 1488.4s elapsed
+2026-07-23 13:07:45,378 INFO cctv-continuous-recorder: Input layer 180x320 rotation=0 -> 1280x720 cover
+2026-07-23 13:07:48,649 INFO cctv-continuous-recorder: Segment 1: 14700 frames, 1499.4s elapsed
+2026-07-23 13:07:58,751 INFO cctv-continuous-recorder: Segment 1: 14800 frames, 1509.5s elapsed
+2026-07-23 13:08:08,742 INFO cctv-continuous-recorder: Segment 1: 14900 frames, 1519.5s elapsed
+2026-07-23 13:08:18,694 INFO cctv-continuous-recorder: Segment 1: 15000 frames, 1529.4s elapsed
+2026-07-23 13:08:28,781 INFO cctv-continuous-recorder: Segment 1: 15100 frames, 1539.5s elapsed
+2026-07-23 13:08:38,735 INFO cctv-continuous-recorder: Segment 1: 15200 frames, 1549.5s elapsed
+2026-07-23 13:08:48,745 INFO cctv-continuous-recorder: Segment 1: 15300 frames, 1559.5s elapsed
+2026-07-23 13:08:58,715 INFO cctv-continuous-recorder: Segment 1: 15400 frames, 1569.4s elapsed
+2026-07-23 13:09:08,730 INFO cctv-continuous-recorder: Segment 1: 15500 frames, 1579.4s elapsed
+2026-07-23 13:09:18,732 INFO cctv-continuous-recorder: Segment 1: 15600 frames, 1589.4s elapsed
+2026-07-23 13:09:28,708 INFO cctv-continuous-recorder: Segment 1: 15700 frames, 1599.4s elapsed
+2026-07-23 13:09:38,724 INFO cctv-continuous-recorder: Segment 1: 15800 frames, 1609.4s elapsed
+2026-07-23 13:09:48,752 INFO cctv-continuous-recorder: Segment 1: 15900 frames, 1619.5s elapsed
+2026-07-23 13:09:58,809 INFO cctv-continuous-recorder: Segment 1: 16000 frames, 1629.5s elapsed
+2026-07-23 13:10:08,727 INFO cctv-continuous-recorder: Segment 1: 16100 frames, 1639.4s elapsed
+2026-07-23 13:10:18,737 INFO cctv-continuous-recorder: Segment 1: 16200 frames, 1649.5s elapsed
+2026-07-23 13:10:28,712 INFO cctv-continuous-recorder: Segment 1: 16300 frames, 1659.4s elapsed
+2026-07-23 13:10:38,692 INFO cctv-continuous-recorder: Segment 1: 16400 frames, 1669.4s elapsed
+2026-07-23 13:10:48,711 INFO cctv-continuous-recorder: Segment 1: 16500 frames, 1679.4s elapsed
+2026-07-23 13:10:58,690 INFO cctv-continuous-recorder: Segment 1: 16600 frames, 1689.4s elapsed
+2026-07-23 13:11:08,999 INFO cctv-continuous-recorder: Segment 1: 16700 frames, 1699.7s elapsed
+2026-07-23 13:11:19,003 INFO cctv-continuous-recorder: Segment 1: 16800 frames, 1709.7s elapsed
+2026-07-23 13:11:24,596 INFO cctv-continuous-recorder: Input layer 270x480 rotation=0 -> 1280x720 cover
+2026-07-23 13:11:29,018 INFO cctv-continuous-recorder: Segment 1: 16900 frames, 1719.7s elapsed
+2026-07-23 13:11:34,423 INFO cctv-continuous-recorder: Input layer 540x960 rotation=0 -> 1280x720 cover
+2026-07-23 13:11:38,880 INFO cctv-continuous-recorder: Segment 1: 17000 frames, 1729.6s elapsed
+2026-07-23 13:11:45,825 INFO cctv-continuous-recorder: Input layer 180x320 rotation=0 -> 1280x720 cover
+2026-07-23 13:11:49,812 INFO cctv-continuous-recorder: Segment 1: 17100 frames, 1740.5s elapsed
+2026-07-23 13:11:59,898 INFO cctv-continuous-recorder: Segment 1: 17200 frames, 1750.6s elapsed
+2026-07-23 13:12:09,922 INFO cctv-continuous-recorder: Segment 1: 17300 frames, 1760.6s elapsed
+2026-07-23 13:12:19,888 INFO cctv-continuous-recorder: Segment 1: 17400 frames, 1770.6s elapsed
+2026-07-23 13:12:29,996 INFO cctv-continuous-recorder: Segment 1: 17500 frames, 1780.7s elapsed
+2026-07-23 13:12:39,982 INFO cctv-continuous-recorder: Segment 1: 17600 frames, 1790.7s elapsed
+2026-07-23 13:12:50,434 INFO cctv-continuous-recorder: Finalized segment /home/rs/CCTV_Recordings/cam-1772515015057/2026/07/23/cam-1772515015057_2026-07-23_12-42-49-282_to_13-12-49-461.mp4: 1800.10s, 110.48 MB, 17693 frames
+2026-07-23 13:12:50,437 INFO cctv-continuous-recorder: Starting segment 2: 1800s, 1280x720, mode=landscape, fit=cover
+2026-07-23 13:12:50,437 INFO cctv-continuous-recorder: Input layer 180x320 rotation=0 -> 1280x720 cover
+2026-07-23 13:13:00,095 INFO cctv-continuous-recorder: Segment 2: 100 frames, 9.7s elapsed
+2026-07-23 13:13:10,105 INFO cctv-continuous-recorder: Segment 2: 200 frames, 19.7s elapsed
+2026-07-23 13:13:20,100 INFO cctv-continuous-recorder: Segment 2: 300 frames, 29.7s elapsed
+2026-07-23 13:13:30,074 INFO cctv-continuous-recorder: Segment 2: 400 frames, 39.6s elapsed
+2026-07-23 13:13:40,060 INFO cctv-continuous-recorder: Segment 2: 500 frames, 49.6s elapsed
+2026-07-23 13:13:46,558 WARNING livekit: libwebrtc::imp::video_stream:295:libwebrtc::imp::video_stream - native video stream queue overflow; dropped 1 queued frames
+2026-07-23 13:13:50,281 INFO cctv-continuous-recorder: Segment 2: 600 frames, 59.8s elapsed
+2026-07-23 13:14:00,300 INFO cctv-continuous-recorder: Segment 2: 700 frames, 69.9s elapsed
+2026-07-23 13:14:10,291 INFO cctv-continuous-recorder: Segment 2: 800 frames, 79.9s elapsed
+2026-07-23 13:14:20,284 INFO cctv-continuous-recorder: Segment 2: 900 frames, 89.8s elapsed
+2026-07-23 13:14:30,300 INFO cctv-continuous-recorder: Segment 2: 1000 frames, 99.9s elapsed
+2026-07-23 13:14:40,257 INFO cctv-continuous-recorder: Segment 2: 1100 frames, 109.8s elapsed
+2026-07-23 13:14:50,268 INFO cctv-continuous-recorder: Segment 2: 1200 frames, 119.8s elapsed
+2026-07-23 13:15:00,305 INFO cctv-continuous-recorder: Segment 2: 1300 frames, 129.9s elapsed
+2026-07-23 13:15:10,342 INFO cctv-continuous-recorder: Segment 2: 1400 frames, 139.9s elapsed
+2026-07-23 13:15:20,383 INFO cctv-continuous-recorder: Segment 2: 1500 frames, 149.9s elapsed
+2026-07-23 13:15:25,066 INFO cctv-continuous-recorder: Input layer 270x480 rotation=0 -> 1280x720 cover
+2026-07-23 13:15:30,386 INFO cctv-continuous-recorder: Segment 2: 1600 frames, 160.0s elapsed
+2026-07-23 13:15:35,002 INFO cctv-continuous-recorder: Input layer 540x960 rotation=0 -> 1280x720 cover
+2026-07-23 13:15:40,288 INFO cctv-continuous-recorder: Segment 2: 1700 frames, 169.9s elapsed
+2026-07-23 13:15:45,918 INFO cctv-continuous-recorder: Input layer 180x320 rotation=0 -> 1280x720 cover
+2026-07-23 13:15:50,840 INFO cctv-continuous-recorder: Segment 2: 1800 frames, 180.4s elapsed
+2026-07-23 13:16:00,888 INFO cctv-continuous-recorder: Segment 2: 1900 frames, 190.5s elapsed
+2026-07-23 13:16:10,915 INFO cctv-continuous-recorder: Segment 2: 2000 frames, 200.5s elapsed
+2026-07-23 13:16:20,916 INFO cctv-continuous-recorder: Segment 2: 2100 frames, 210.5s elapsed
+2026-07-23 13:16:31,303 INFO cctv-continuous-recorder: Segment 2: 2200 frames, 220.9s elapsed
+2026-07-23 13:16:41,291 INFO cctv-continuous-recorder: Segment 2: 2300 frames, 230.9s elapsed
+2026-07-23 13:16:51,224 INFO cctv-continuous-recorder: Segment 2: 2400 frames, 240.8s elapsed
+2026-07-23 13:17:01,303 INFO cctv-continuous-recorder: Segment 2: 2500 frames, 250.9s elapsed
+2026-07-23 13:17:11,293 INFO cctv-continuous-recorder: Segment 2: 2600 frames, 260.9s elapsed
+2026-07-23 13:17:21,304 INFO cctv-continuous-recorder: Segment 2: 2700 frames, 270.9s elapsed
+2026-07-23 13:17:31,249 INFO cctv-continuous-recorder: Segment 2: 2800 frames, 280.8s elapsed
+2026-07-23 13:17:41,281 INFO cctv-continuous-recorder: Segment 2: 2900 frames, 290.8s elapsed
+2026-07-23 13:17:51,251 INFO cctv-continuous-recorder: Segment 2: 3000 frames, 300.8s elapsed
+2026-07-23 13:18:01,248 INFO cctv-continuous-recorder: Segment 2: 3100 frames, 310.8s elapsed
+2026-07-23 13:18:11,257 INFO cctv-continuous-recorder: Segment 2: 3200 frames, 320.8s elapsed
+2026-07-23 13:18:21,245 INFO cctv-continuous-recorder: Segment 2: 3300 frames, 330.8s elapsed
+2026-07-23 13:18:31,264 INFO cctv-continuous-recorder: Segment 2: 3400 frames, 340.8s elapsed
+2026-07-23 13:18:41,235 INFO cctv-continuous-recorder: Segment 2: 3500 frames, 350.8s elapsed
+2026-07-23 13:18:51,214 INFO cctv-continuous-recorder: Segment 2: 3600 frames, 360.8s elapsed
+2026-07-23 13:19:01,276 INFO cctv-continuous-recorder: Segment 2: 3700 frames, 370.8s elapsed
+2026-07-23 13:19:11,247 INFO cctv-continuous-recorder: Segment 2: 3800 frames, 380.8s elapsed
+2026-07-23 13:19:21,234 INFO cctv-continuous-recorder: Segment 2: 3900 frames, 390.8s elapsed
+2026-07-23 13:19:25,507 INFO cctv-continuous-recorder: Input layer 270x480 rotation=0 -> 1280x720 cover
+2026-07-23 13:19:26,411 INFO cctv-continuous-recorder: Input layer 135x240 rotation=0 -> 1280x720 cover
+2026-07-23 13:19:31,280 INFO cctv-continuous-recorder: Segment 2: 4000 frames, 400.8s elapsed
+2026-07-23 13:19:35,455 INFO cctv-continuous-recorder: Input layer 270x480 rotation=0 -> 1280x720 cover
+2026-07-23 13:19:35,537 INFO cctv-continuous-recorder: Input layer 540x960 rotation=0 -> 1280x720 cover
+2026-07-23 13:19:41,302 INFO cctv-continuous-recorder: Segment 2: 4100 frames, 410.9s elapsed
+2026-07-23 13:19:46,932 INFO cctv-continuous-recorder: Input layer 180x320 rotation=0 -> 1280x720 cover
+2026-07-23 13:19:52,220 INFO cctv-continuous-recorder: Segment 2: 4200 frames, 421.8s elapsed
+2026-07-23 13:20:02,242 INFO cctv-continuous-recorder: Segment 2: 4300 frames, 431.8s elapsed
+2026-07-23 13:20:12,380 INFO cctv-continuous-recorder: Segment 2: 4400 frames, 441.9s elapsed
+2026-07-23 13:20:22,357 INFO cctv-continuous-recorder: Segment 2: 4500 frames, 451.9s elapsed
+2026-07-23 13:20:32,331 INFO cctv-continuous-recorder: Segment 2: 4600 frames, 461.9s elapsed
+2026-07-23 13:20:42,366 INFO cctv-continuous-recorder: Segment 2: 4700 frames, 471.9s elapsed
+2026-07-23 13:20:49,642 INFO cctv-continuous-recorder: Stop requested; finalizing the active segment.
+2026-07-23 13:20:50,093 INFO cctv-continuous-recorder: Finalized segment /home/rs/CCTV_Recordings/cam-1772515015057/2026/07/23/cam-1772515015057_2026-07-23_13-12-50-435_to_13-20-49-809_stopped.mp4: 479.20s, 27.96 MB, 4773 frames
+2026-07-23 13:20:50,188 INFO livekit: livekit::room:1687:livekit::room - disconnected from room with reason: ClientInitiated

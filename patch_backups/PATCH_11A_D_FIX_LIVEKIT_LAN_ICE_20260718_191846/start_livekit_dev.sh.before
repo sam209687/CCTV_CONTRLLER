@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+command -v livekit-server >/dev/null 2>&1 || {
+  echo "livekit-server is not installed." >&2
+  echo "Run: bash scripts/install_livekit_server.sh" >&2
+  exit 1
+}
+
+echo "Starting LiveKit development server"
+echo "Signal URL: ws://10.136.70.214:7880"
+echo "LAN binding: 0.0.0.0"
+echo
+
+exec livekit-server --dev --bind 0.0.0.0

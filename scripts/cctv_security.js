@@ -1,0 +1,168 @@
+"use strict";
+
+require("dotenv").config();
+
+const crypto = require("crypto");
+
+const masterSecret =
+  String(
+    process.env.CCTV_DEVICE_MASTER_SECRET || "",
+  ).trim();
+
+const dashboardToken =
+  String(
+    process.env.CCTV_DASHBOARD_TOKEN || "",
+  ).trim();
+
+function fail(message) {
+  console.error(message);
+  process.exit(1);
+}
+
+function cameraTokenEnvironmentKey(cameraId) {
+  return `CCTV_CAMERA_TOKEN_${String(
+    cameraId || "",
+  )
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "_")}`;
+}
+
+function cameraToken(cameraId) {
+  const normalized = String(cameraId || "")
+    .trim()
+    .toLowerCase();
+
+  if (!normalized) {
+    fail("Camera ID is required");
+  }
+
+  const explicitToken =
+    String(
+      process.env[
+        cameraTokenEnvironmentKey(normalized)
+      ] || "",
+    ).trim();
+
+  if (explicitToken) {
+    return explicitToken;
+  }
+
+  if (!masterSecret) {
+    fail(
+      "CCTV_DEVICE_MASTER_SECRET is missing from .env",
+    );
+  }
+
+  return crypto
+    .createHmac("sha256", masterSecret)
+    .update(`camera:${normalized}`)
+    .digest("base64url");
+}
+
+function fingerprint(value) {
+  return crypto
+    .createHash("sha256")
+    .update(String(value || ""))
+    .digest("hex")
+    .slice(0, 16);
+}
+
+const [
+  command = "status",
+  argument = "",
+  flag = "",
+] = process.argv.slice(2);
+
+switch (command) {
+  case "issue-camera": {
+    const token = cameraToken(argument);
+
+    if (flag === "--plain") {
+      process.stdout.write(token);
+      break;
+    }
+
+    console.log(
+      JSON.stringify(
+        {
+          cameraId: argument,
+          token,
+          fingerprint: fingerprint(token),
+        },
+        null,
+        2,
+      ),
+    );
+    break;
+  }
+
+  case "dashboard-token": {
+    if (!dashboardToken) {
+      fail(
+        "CCTV_DASHBOARD_TOKEN is missing from .env",
+      );
+    }
+
+    if (argument === "--plain") {
+      process.stdout.write(dashboardToken);
+      break;
+    }
+
+    console.log(
+      JSON.stringify(
+        {
+          token: dashboardToken,
+          fingerprint:
+            fingerprint(dashboardToken),
+        },
+        null,
+        2,
+      ),
+    );
+    break;
+  }
+
+  case "status": {
+    console.log(
+      JSON.stringify(
+        {
+          securityRequired:
+            String(
+              process.env.CCTV_SECURITY_REQUIRED ||
+                "true",
+            ).toLowerCase() !== "false",
+          masterSecretConfigured:
+            Boolean(masterSecret),
+          dashboardTokenConfigured:
+            Boolean(dashboardToken),
+          dashboardTokenFingerprint:
+            dashboardToken
+              ? fingerprint(dashboardToken)
+              : null,
+          playbackUrlTtlSeconds:
+            Number(
+              process.env
+                .CCTV_PLAYBACK_URL_TTL_SECONDS ||
+                3600,
+            ),
+        },
+        null,
+        2,
+      ),
+    );
+    break;
+  }
+
+  default:
+    fail(
+      [
+        "Usage:",
+        "  node scripts/cctv_security.js status",
+        "  node scripts/cctv_security.js issue-camera <camera-id>",
+        "  node scripts/cctv_security.js issue-camera <camera-id> --plain",
+        "  node scripts/cctv_security.js dashboard-token",
+        "  node scripts/cctv_security.js dashboard-token --plain",
+      ].join("\n"),
+    );
+}

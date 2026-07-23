@@ -1,0 +1,2531 @@
+// backend-nextjs/server.js
+
+require("dotenv").config();
+
+const cors = require("cors");
+const crypto = require("crypto");
+const express = require("express");
+const fs = require("fs");
+const fsp = require("fs/promises");
+const http = require("http");
+const path = require("path");
+const { Server } = require("socket.io");
+const { AccessToken } = require("livekit-server-sdk");
+const { PrismaClient } = require("@prisma/client");
+const {
+  createStorageManager,
+} = require("./server/storage/storageManager");
+const {
+  registerStorageRoutes,
+} = require("./server/storage/storageRoutes");
+const {
+  createRetentionManager,
+} = require("./server/retention/retentionManager");
+const {
+  registerRetentionRoutes,
+} = require("./server/retention/retentionRoutes");
+
+const app = express();
+const httpServer = http.createServer(app);
+const prisma = new PrismaClient();
+
+// PATCH_02_RECORDING_DATABASE_API
+
+const PORT = Number(process.env.PORT || 3000);
+const HOST = process.env.HOST || "0.0.0.0";
+
+const LIVEKIT_PROFILE =
+  String(
+    process.env.LIVEKIT_PROFILE || "local-dev",
+  ).trim();
+
+const LIVEKIT_URL =
+  String(process.env.LIVEKIT_URL || "").trim();
+
+const LIVEKIT_API_KEY =
+  String(process.env.LIVEKIT_API_KEY || "").trim();
+
+const LIVEKIT_API_SECRET =
+  String(process.env.LIVEKIT_API_SECRET || "").trim();
+
+const LIVEKIT_TOKEN_TTL =
+  String(process.env.LIVEKIT_TOKEN_TTL || "1h").trim();
+
+const CCTV_SECURITY_REQUIRED =
+  String(
+    process.env.CCTV_SECURITY_REQUIRED || "true",
+  ).toLowerCase() !== "false";
+
+const CCTV_DEVICE_MASTER_SECRET =
+  String(
+    process.env.CCTV_DEVICE_MASTER_SECRET || "",
+  ).trim();
+
+const CCTV_DASHBOARD_TOKEN =
+  String(
+    process.env.CCTV_DASHBOARD_TOKEN || "",
+  ).trim();
+
+const CCTV_PLAYBACK_URL_TTL_SECONDS =
+  Math.max(
+    60,
+    Number(
+      process.env.CCTV_PLAYBACK_URL_TTL_SECONDS ||
+        3600,
+    ) || 3600,
+  );
+
+if (
+  CCTV_SECURITY_REQUIRED &&
+  (
+    !CCTV_DEVICE_MASTER_SECRET ||
+    !CCTV_DASHBOARD_TOKEN
+  )
+) {
+  throw new Error(
+    "CCTV security is enabled, but required secrets are missing from .env",
+  );
+}
+const SERVER_IP = process.env.SERVER_IP || "127.0.0.1";
+
+const CAMERA_NO_SIGNAL_TIMEOUT_MS = 10000;
+const STATS_INTERVAL_MS = 10000;
+
+const RECORDINGS_ROOT = path.resolve(
+  process.env.RECORDINGS_DIR ||
+    path.join(__dirname, "recordings"),
+);
+
+const MAX_RECORDING_UPLOAD_SIZE =
+  process.env.MAX_RECORDING_UPLOAD_SIZE || "1gb";
+
+fs.mkdirSync(RECORDINGS_ROOT, {
+  recursive: true,
+});
+
+const storageManager = createStorageManager({
+  prisma,
+  legacyRoot: RECORDINGS_ROOT,
+});
+
+const retentionManager = createRetentionManager({
+  prisma,
+  storageManager,
+});
+
+// PATCH_03_STORAGE_MANAGER_API
+// PATCH_08_PERSISTENT_UPLOAD_QUEUE
+// PATCH_06_RETENTION_ENGINE_API
+
+const io = new Server(httpServer, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"],
+  },
+  maxHttpBufferSize: 10e6,
+  pingTimeout: 60000,
+  pingInterval: 25000,
+  transports: ["websocket"],
+});
+
+io.use((socket, next) => {
+  if (!CCTV_SECURITY_REQUIRED) {
+    next();
+    return;
+  }
+
+  const auth = socket.handshake.auth || {};
+  const role = String(auth.role || "").trim();
+
+  if (role === "camera") {
+    const cameraId =
+      normalizeCameraId(auth.cameraId);
+
+    if (
+      !verifyCameraToken(
+        cameraId,
+        String(auth.token || ""),
+      )
+    ) {
+      next(
+        new Error(
+          "Unauthorized camera connection",
+        ),
+      );
+      return;
+    }
+
+    socket.data.securityRole = "camera";
+    socket.data.authenticatedCameraId =
+      cameraId;
+
+    next();
+    return;
+  }
+
+  if (
+    role === "viewer" &&
+    verifyDashboardToken(
+      String(auth.token || ""),
+    )
+  ) {
+    socket.data.securityRole = "viewer";
+    next();
+    return;
+  }
+
+  next(
+    new Error(
+      "Unauthorized CCTV Socket.IO connection",
+    ),
+  );
+});
+
+app.use(cors());
+
+
+function getLiveKitCameraRoomName(cameraId) {
+  return `camera-${String(cameraId || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]/g, "_")
+    .slice(0, 120)}`;
+}
+
+function isLiveKitConfigured() {
+  return Boolean(
+    LIVEKIT_URL &&
+    LIVEKIT_API_KEY &&
+    LIVEKIT_API_SECRET,
+  );
+}
+
+async function createLiveKitJoinCredentials({
+  cameraId,
+  role,
+}) {
+  const normalizedCameraId =
+    normalizeCameraId(cameraId);
+
+  if (!normalizedCameraId) {
+    throw new Error("Camera ID is required");
+  }
+
+  if (!isLiveKitConfigured()) {
+    throw new Error(
+      "LiveKit environment variables are not configured",
+    );
+  }
+
+  const roomName =
+    getLiveKitCameraRoomName(normalizedCameraId);
+
+  const participantIdentity =
+    role === "camera"
+      ? `camera:${normalizedCameraId}`
+      : `viewer:${normalizedCameraId}:${crypto.randomUUID()}`;
+
+  const accessToken = new AccessToken(
+    LIVEKIT_API_KEY,
+    LIVEKIT_API_SECRET,
+    {
+      identity: participantIdentity,
+      name:
+        role === "camera"
+          ? `Camera ${normalizedCameraId}`
+          : `Dashboard viewer ${normalizedCameraId}`,
+      metadata: JSON.stringify({
+        role,
+        cameraId: normalizedCameraId,
+      }),
+      ttl: LIVEKIT_TOKEN_TTL,
+    },
+  );
+
+  accessToken.addGrant({
+    roomJoin: true,
+    room: roomName,
+    canPublish: role === "camera",
+    canSubscribe: role === "viewer",
+    canPublishData: true,
+  });
+
+  return {
+    server_url: LIVEKIT_URL,
+    participant_token:
+      await accessToken.toJwt(),
+    room_name: roomName,
+    participant_identity:
+      participantIdentity,
+    camera_id: normalizedCameraId,
+    role,
+  };
+}
+
+app.get(
+  "/webrtc/status",
+  (_request, response) => {
+    response.json({
+      ok: isLiveKitConfigured(),
+      mode: "webrtc-only",
+      profile: LIVEKIT_PROFILE,
+      livekitUrl: LIVEKIT_URL || null,
+      legacyJpegPreviewActive: false,
+      phoneMp4RecordingActive: false,
+      timestamp: Date.now(),
+    });
+  },
+);
+
+app.post(
+  "/webrtc/token/camera",
+  express.json({ limit: "64kb" }),
+  async (request, response) => {
+    const cameraId = normalizeCameraId(
+      request.headers["x-camera-id"] ||
+        request.body?.cameraId,
+    );
+
+    const cameraToken = normalizeHeaderValue(
+      request.headers["x-camera-token"],
+    );
+
+    if (
+      CCTV_SECURITY_REQUIRED &&
+      !verifyCameraToken(cameraId, cameraToken)
+    ) {
+      response.status(401).json({
+        ok: false,
+        error:
+          "Valid X-Camera-Id and X-Camera-Token headers are required",
+      });
+      return;
+    }
+
+    try {
+      const credentials =
+        await createLiveKitJoinCredentials({
+          cameraId,
+          role: "camera",
+        });
+
+      response.status(201).json(credentials);
+    } catch (error) {
+      console.error(
+        "❌ Camera LiveKit token error:",
+        error,
+      );
+
+      response.status(500).json({
+        ok: false,
+        error:
+          error?.message ||
+          "Failed to issue camera LiveKit token",
+      });
+    }
+  },
+);
+
+app.post(
+  "/webrtc/token/viewer",
+  express.json({ limit: "64kb" }),
+  async (request, response) => {
+    if (
+      CCTV_SECURITY_REQUIRED &&
+      !verifyDashboardToken(
+        getBearerToken(request),
+      )
+    ) {
+      response.status(401).json({
+        ok: false,
+        error:
+          "Dashboard authorization is required",
+      });
+      return;
+    }
+
+    const cameraId = normalizeCameraId(
+      request.body?.cameraId,
+    );
+
+    try {
+      const credentials =
+        await createLiveKitJoinCredentials({
+          cameraId,
+          role: "viewer",
+        });
+
+      response.status(201).json(credentials);
+    } catch (error) {
+      console.error(
+        "❌ Viewer LiveKit token error:",
+        error,
+      );
+
+      response.status(500).json({
+        ok: false,
+        error:
+          error?.message ||
+          "Failed to issue viewer LiveKit token",
+      });
+    }
+  },
+);
+
+app.use((request, response, next) => {
+  if (
+    !CCTV_SECURITY_REQUIRED ||
+    request.method === "OPTIONS"
+  ) {
+    next();
+    return;
+  }
+
+  const publicPaths = new Set([
+    "/",
+    "/health",
+    "/security/status",
+  ]);
+
+  if (publicPaths.has(request.path)) {
+    next();
+    return;
+  }
+
+  if (
+    request.method === "GET" &&
+    request.path.startsWith(
+      "/recordings/item/",
+    ) &&
+    request.path.endsWith("/file")
+  ) {
+    if (
+      verifySignedPlaybackRequest(request) ||
+      verifyDashboardToken(
+        getBearerToken(request),
+      )
+    ) {
+      next();
+      return;
+    }
+
+    response.status(401).json({
+      ok: false,
+      error:
+        "A valid signed playback URL is required",
+    });
+    return;
+  }
+
+  if (
+    request.path === "/recordings/upload"
+  ) {
+    const cameraId =
+      normalizeCameraId(
+        request.headers["x-camera-id"],
+      );
+
+    const cameraToken =
+      normalizeHeaderValue(
+        request.headers["x-camera-token"],
+      );
+
+    if (
+      verifyCameraToken(
+        cameraId,
+        cameraToken,
+      )
+    ) {
+      next();
+      return;
+    }
+
+    response.status(401).json({
+      ok: false,
+      error:
+        "Valid X-Camera-Id and X-Camera-Token headers are required",
+    });
+    return;
+  }
+
+  if (
+    verifyDashboardToken(
+      getBearerToken(request),
+    )
+  ) {
+    next();
+    return;
+  }
+
+  response.status(401).json({
+    ok: false,
+    error:
+      "Dashboard authorization is required",
+  });
+});
+
+// cameraId -> camera information
+const cameras = new Map();
+
+// viewer socket ID -> viewer information
+const viewers = new Map();
+
+// cameraId -> latest frame information
+const frameCache = new Map();
+
+// cameraId -> Set of viewer socket IDs requesting JPEG preview
+const previewRequests = new Map();
+
+// cameraId -> latest phone health payload
+const cameraHealth = new Map();
+
+function normalizeCameraId(value) {
+  return String(value || "").trim();
+}
+
+function sanitizePathSegment(value, fallback = "unknown") {
+  const cleaned = String(value || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]/g, "_")
+    .replace(/^\.+/, "")
+    .slice(0, 180);
+
+  return cleaned || fallback;
+}
+
+function normalizeHeaderValue(value) {
+  if (Array.isArray(value)) {
+    return String(value[0] || "").trim();
+  }
+
+  return String(value || "").trim();
+}
+
+function secureEqual(left, right) {
+  const leftBuffer = Buffer.from(
+    String(left || ""),
+  );
+
+  const rightBuffer = Buffer.from(
+    String(right || ""),
+  );
+
+  return (
+    leftBuffer.length === rightBuffer.length &&
+    crypto.timingSafeEqual(
+      leftBuffer,
+      rightBuffer,
+    )
+  );
+}
+
+function cameraTokenEnvironmentKey(cameraId) {
+  return `CCTV_CAMERA_TOKEN_${String(
+    cameraId || "",
+  )
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "_")}`;
+}
+
+function expectedCameraToken(cameraId) {
+  const explicitToken =
+    String(
+      process.env[
+        cameraTokenEnvironmentKey(cameraId)
+      ] || "",
+    ).trim();
+
+  if (explicitToken) {
+    return explicitToken;
+  }
+
+  return crypto
+    .createHmac(
+      "sha256",
+      CCTV_DEVICE_MASTER_SECRET,
+    )
+    .update(`camera:${cameraId}`)
+    .digest("base64url");
+}
+
+function verifyCameraToken(cameraId, token) {
+  const normalizedCameraId =
+    normalizeCameraId(cameraId);
+
+  if (
+    !normalizedCameraId ||
+    !token ||
+    !CCTV_DEVICE_MASTER_SECRET
+  ) {
+    return false;
+  }
+
+  return secureEqual(
+    expectedCameraToken(normalizedCameraId),
+    token,
+  );
+}
+
+function verifyDashboardToken(token) {
+  return Boolean(
+    token &&
+    CCTV_DASHBOARD_TOKEN &&
+    secureEqual(
+      token,
+      CCTV_DASHBOARD_TOKEN,
+    ),
+  );
+}
+
+function getBearerToken(request) {
+  const authorization =
+    normalizeHeaderValue(
+      request.headers.authorization,
+    );
+
+  const match = authorization.match(
+    /^Bearer\s+(.+)$/i,
+  );
+
+  return match ? match[1].trim() : "";
+}
+
+function createPlaybackSignature(
+  recordingId,
+  expiresAt,
+) {
+  return crypto
+    .createHmac(
+      "sha256",
+      CCTV_DEVICE_MASTER_SECRET,
+    )
+    .update(
+      `playback:${recordingId}:${expiresAt}`,
+    )
+    .digest("base64url");
+}
+
+function buildSignedRecordingFileUrl(
+  request,
+  recordingId,
+) {
+  const expiresAt =
+    Math.floor(Date.now() / 1000) +
+    CCTV_PLAYBACK_URL_TTL_SECONDS;
+
+  const signature =
+    createPlaybackSignature(
+      recordingId,
+      expiresAt,
+    );
+
+  return `${request.protocol}://${request.get(
+    "host",
+  )}/recordings/item/${encodeURIComponent(
+    recordingId,
+  )}/file?expires=${expiresAt}&signature=${encodeURIComponent(
+    signature,
+  )}`;
+}
+
+function verifySignedPlaybackRequest(request) {
+  const match = request.path.match(
+    /^\/recordings\/item\/([^/]+)\/file$/,
+  );
+
+  if (!match) {
+    return false;
+  }
+
+  const recordingId =
+    decodeURIComponent(match[1]);
+
+  const expiresAt = Number(
+    request.query.expires,
+  );
+
+  const signature =
+    String(request.query.signature || "");
+
+  if (
+    !Number.isFinite(expiresAt) ||
+    expiresAt < Math.floor(Date.now() / 1000) ||
+    !signature
+  ) {
+    return false;
+  }
+
+  return secureEqual(
+    createPlaybackSignature(
+      recordingId,
+      expiresAt,
+    ),
+    signature,
+  );
+}
+
+function toIsoDateFolder(value) {
+  const parsed = new Date(value);
+  const validDate = Number.isNaN(parsed.getTime())
+    ? new Date()
+    : parsed;
+
+  return validDate.toISOString().slice(0, 10);
+}
+
+function getViewerRoom(cameraId) {
+  return `viewers:${cameraId}`;
+}
+
+function countCameraViewers(cameraId) {
+  let count = 0;
+
+  viewers.forEach((viewer) => {
+    if (viewer.cameraId === cameraId) {
+      count += 1;
+    }
+  });
+
+  return count;
+}
+
+function buildPublicRecordingUrl(request, relativePath) {
+  const encodedPath = relativePath
+    .split(path.sep)
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+
+  return `${request.protocol}://${request.get(
+    "host",
+  )}/recordings/files/${encodedPath}`;
+}
+
+function serializeRecording(recording, request) {
+  return {
+    id: recording.id,
+    cameraId: recording.cameraId,
+    fileName: recording.fileName,
+    relativeFilePath: recording.relativeFilePath,
+    fileUrl: buildSignedRecordingFileUrl(
+      request,
+      recording.id,
+    ),
+    sizeBytes: Number(recording.sizeBytes),
+    startedAt: recording.startedAt.toISOString(),
+    endedAt: recording.endedAt
+      ? recording.endedAt.toISOString()
+      : null,
+    durationSeconds: recording.durationSeconds,
+    checksumSha256: recording.checksumSha256,
+    uploadId: recording.uploadId,
+    clientChecksumMd5: recording.clientChecksumMd5,
+    recordingMode: recording.recordingMode,
+    eventType: recording.eventType,
+    isLocked: recording.isLocked,
+    uploadStatus: recording.uploadStatus,
+    storageTargetId: recording.storageTargetId,
+    uploadedAt: recording.uploadedAt.toISOString(),
+    createdAt: recording.createdAt.toISOString(),
+    updatedAt: recording.updatedAt.toISOString(),
+  };
+}
+
+function parsePositiveInteger(value, fallback, maximum) {
+  const parsed = Number(value);
+
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+
+  return Math.min(Math.round(parsed), maximum);
+}
+
+function buildRecordingDateFilter(request) {
+  const startedAt = {};
+
+  if (typeof request.query.from === "string") {
+    const from = new Date(request.query.from);
+
+    if (!Number.isNaN(from.getTime())) {
+      startedAt.gte = from;
+    }
+  }
+
+  if (typeof request.query.to === "string") {
+    const to = new Date(request.query.to);
+
+    if (!Number.isNaN(to.getTime())) {
+      startedAt.lte = to;
+    }
+  }
+
+  return Object.keys(startedAt).length > 0
+    ? { startedAt }
+    : {};
+}
+
+async function walkMetadataFiles(directory) {
+  const results = [];
+
+  let entries = [];
+
+  try {
+    entries = await fsp.readdir(directory, {
+      withFileTypes: true,
+    });
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return results;
+    }
+
+    throw error;
+  }
+
+  for (const entry of entries) {
+    const fullPath = path.join(directory, entry.name);
+
+    if (entry.isDirectory()) {
+      results.push(
+        ...(await walkMetadataFiles(fullPath)),
+      );
+    } else if (
+      entry.isFile() &&
+      entry.name.endsWith(".json")
+    ) {
+      results.push(fullPath);
+    }
+  }
+
+  return results;
+}
+
+async function readAllRecordingMetadata() {
+  const metadataFiles = await walkMetadataFiles(
+    RECORDINGS_ROOT,
+  );
+
+  const recordings = [];
+
+  for (const metadataPath of metadataFiles) {
+    try {
+      const raw = await fsp.readFile(
+        metadataPath,
+        "utf8",
+      );
+
+      recordings.push(JSON.parse(raw));
+    } catch (error) {
+      console.warn(
+        "⚠️ Skipping invalid recording metadata:",
+        metadataPath,
+        error.message,
+      );
+    }
+  }
+
+  return recordings.sort(
+    (left, right) =>
+      new Date(right.startedAt).getTime() -
+      new Date(left.startedAt).getTime(),
+  );
+}
+
+app.get("/", (_request, response) => {
+  response.json({
+    service: "Smartphone CCTV Socket Server",
+    status: "running",
+    activeCameras: cameras.size,
+    activeViewers: viewers.size,
+    recordingsRoot: RECORDINGS_ROOT,
+    timestamp: Date.now(),
+  });
+});
+
+app.get("/health", async (_request, response) => {
+  let database = "connected";
+  let recordingCount = 0;
+
+  try {
+    recordingCount = await prisma.recording.count();
+  } catch (error) {
+    database = "disconnected";
+    console.error("❌ Prisma health check failed:", error.message);
+  }
+
+  response.status(database === "connected" ? 200 : 503).json({
+    ok: database === "connected",
+    database,
+    recordingCount,
+    activeCameras: cameras.size,
+    activeViewers: viewers.size,
+    cachedFrames: frameCache.size,
+    recordingsRoot: RECORDINGS_ROOT,
+    timestamp: Date.now(),
+  });
+});
+
+// --------------------------------------------------
+// MP4 recording upload
+// --------------------------------------------------
+
+app.post(
+  "/recordings/upload",
+  express.raw({
+    type: ["video/mp4", "application/octet-stream"],
+    limit: MAX_RECORDING_UPLOAD_SIZE,
+  }),
+  async (request, response) => {
+    let targetPath = null;
+
+    try {
+      const cameraId = normalizeCameraId(
+        request.headers["x-camera-id"],
+      );
+
+      if (!cameraId) {
+        response.status(400).json({
+          ok: false,
+          error: "X-Camera-Id header is required",
+        });
+        return;
+      }
+
+      if (
+        !Buffer.isBuffer(request.body) ||
+        request.body.length === 0
+      ) {
+        response.status(400).json({
+          ok: false,
+          error: "The MP4 request body is empty",
+        });
+        return;
+      }
+
+      const uploadId =
+        normalizeHeaderValue(
+          request.headers["x-upload-id"],
+        ) || null;
+
+      if (uploadId) {
+        const existingRecording =
+          await prisma.recording.findUnique({
+            where: {
+              uploadId,
+            },
+          });
+
+        if (existingRecording) {
+          response.status(200).json({
+            ok: true,
+            duplicate: true,
+            recording: serializeRecording(
+              existingRecording,
+              request,
+            ),
+          });
+          return;
+        }
+      }
+
+      const clientChecksumMd5 =
+        (
+          normalizeHeaderValue(
+            request.headers["x-content-md5"],
+          ) || ""
+        )
+          .trim()
+          .toLowerCase() || null;
+
+      const receivedChecksumMd5 = crypto
+        .createHash("md5")
+        .update(request.body)
+        .digest("hex");
+
+      if (
+        clientChecksumMd5 &&
+        clientChecksumMd5 !== receivedChecksumMd5
+      ) {
+        response.status(422).json({
+          ok: false,
+          error: "Recording checksum verification failed",
+          expectedChecksumMd5: clientChecksumMd5,
+          receivedChecksumMd5,
+        });
+        return;
+      }
+
+      const startedAtHeader = normalizeHeaderValue(
+        request.headers["x-recording-started-at"],
+      );
+
+      const startedAtDate = new Date(startedAtHeader);
+      const startedAt = Number.isNaN(
+        startedAtDate.getTime(),
+      )
+        ? new Date()
+        : startedAtDate;
+
+      const durationHeader = Number(
+        normalizeHeaderValue(
+          request.headers[
+            "x-recording-duration-seconds"
+          ],
+        ),
+      );
+
+      const durationSeconds =
+        Number.isFinite(durationHeader) &&
+        durationHeader > 0
+          ? Math.round(durationHeader)
+          : 0;
+
+      const endedAt = new Date(
+        startedAt.getTime() + durationSeconds * 1000,
+      );
+
+      const cameraFolderName = sanitizePathSegment(
+        cameraId,
+        "camera",
+      );
+
+      const dateFolderName = toIsoDateFolder(startedAt);
+
+      const requestedFileName = normalizeHeaderValue(
+        request.headers["x-recording-file-name"],
+      );
+
+      const defaultFileName =
+        `${cameraFolderName}_${startedAt
+          .toISOString()
+          .replace(/[:.]/g, "-")}.mp4`;
+
+      let fileName = sanitizePathSegment(
+        requestedFileName || defaultFileName,
+        defaultFileName,
+      );
+
+      if (!fileName.toLowerCase().endsWith(".mp4")) {
+        fileName += ".mp4";
+      }
+
+      const requestedStorageTargetId =
+        normalizeHeaderValue(
+          request.headers["x-storage-target-id"],
+        );
+
+      const storageDestination =
+        await storageManager.resolveStorageTarget(
+          requestedStorageTargetId,
+        );
+
+      const recordingRoot = storageDestination.rootPath;
+
+      const targetDirectory = path.join(
+        recordingRoot,
+        cameraFolderName,
+        dateFolderName,
+      );
+
+      await fsp.mkdir(targetDirectory, {
+        recursive: true,
+      });
+
+      targetPath = path.join(targetDirectory, fileName);
+
+      try {
+        await fsp.writeFile(targetPath, request.body, {
+          flag: "wx",
+        });
+      } catch (error) {
+        if (error.code !== "EEXIST") {
+          throw error;
+        }
+
+        const uniqueSuffix = `${Date.now()}-${Math.random()
+          .toString(36)
+          .slice(2, 8)}`;
+
+        fileName = fileName.replace(
+          /\.mp4$/i,
+          `_${uniqueSuffix}.mp4`,
+        );
+
+        targetPath = path.join(targetDirectory, fileName);
+        await fsp.writeFile(targetPath, request.body, {
+          flag: "wx",
+        });
+      }
+
+      const relativeFilePath = path.relative(
+        recordingRoot,
+        targetPath,
+      );
+
+      const checksumSha256 = crypto
+        .createHash("sha256")
+        .update(request.body)
+        .digest("hex");
+
+      const recordingMode =
+        normalizeHeaderValue(
+          request.headers["x-recording-mode"],
+        ) || "CONTINUOUS";
+
+      const eventType =
+        normalizeHeaderValue(
+          request.headers["x-event-type"],
+        ) || null;
+
+      const databaseRecording =
+        await prisma.recording.create({
+          data: {
+            cameraId,
+            fileName,
+            relativeFilePath,
+            sizeBytes: BigInt(request.body.length),
+            startedAt,
+            endedAt,
+            durationSeconds,
+            checksumSha256,
+            recordingMode,
+            eventType,
+            uploadStatus: "STORED",
+            storageTargetId: storageDestination.id,
+            uploadedAt: new Date(),
+          },
+        });
+
+      const recording = serializeRecording(
+        databaseRecording,
+        request,
+      );
+
+      const metadataPath = path.join(
+        targetDirectory,
+        `${databaseRecording.id}.json`,
+      );
+
+      try {
+        await fsp.writeFile(
+          metadataPath,
+          JSON.stringify(recording, null, 2),
+          "utf8",
+        );
+      } catch (metadataError) {
+        console.warn(
+          "⚠️ Recording saved in database but JSON compatibility metadata failed:",
+          metadataError.message,
+        );
+      }
+
+      console.log("\n🎞️ MP4 RECORDING STORED");
+      console.log("  Recording ID:", databaseRecording.id);
+      console.log("  Camera ID:", cameraId);
+      console.log("  File:", targetPath);
+      console.log(
+        "  Storage target:",
+        `${storageDestination.name} (${storageDestination.id})`,
+      );
+      console.log("  SHA-256:", checksumSha256);
+      console.log(
+        "  Upload ID:",
+        uploadId || "legacy-upload",
+      );
+      console.log(
+        "  Client MD5:",
+        clientChecksumMd5 ||
+          receivedChecksumMd5,
+      );
+      console.log(
+        "  Size:",
+        `${(request.body.length / 1024 / 1024).toFixed(
+          2,
+        )} MB`,
+      );
+      console.log("  Duration:", `${durationSeconds}s`);
+
+      response.status(201).json({
+        ok: true,
+        recording,
+      });
+    } catch (error) {
+      console.error("❌ MP4 upload failed:", error);
+
+      if (targetPath) {
+        await fsp.rm(targetPath, { force: true }).catch(
+          () => undefined,
+        );
+      }
+
+      response.status(500).json({
+        ok: false,
+        error: "Failed to store MP4 recording",
+      });
+    }
+  },
+);
+
+app.get("/recordings/summary", async (request, response) => {
+  try {
+    const cameraId = normalizeCameraId(
+      request.query.cameraId,
+    );
+
+    const where = cameraId ? { cameraId } : {};
+
+    const [count, aggregate, lockedCount] =
+      await Promise.all([
+        prisma.recording.count({ where }),
+        prisma.recording.aggregate({
+          where,
+          _sum: {
+            sizeBytes: true,
+            durationSeconds: true,
+          },
+          _min: { startedAt: true },
+          _max: { startedAt: true },
+        }),
+        prisma.recording.count({
+          where: {
+            ...where,
+            isLocked: true,
+          },
+        }),
+      ]);
+
+    response.json({
+      ok: true,
+      cameraId: cameraId || null,
+      count,
+      lockedCount,
+      totalSizeBytes: Number(
+        aggregate._sum.sizeBytes || 0n,
+      ),
+      totalDurationSeconds:
+        aggregate._sum.durationSeconds || 0,
+      oldestStartedAt:
+        aggregate._min.startedAt?.toISOString() || null,
+      newestStartedAt:
+        aggregate._max.startedAt?.toISOString() || null,
+    });
+  } catch (error) {
+    console.error("❌ Failed to summarize recordings:", error);
+
+    response.status(500).json({
+      ok: false,
+      error: "Failed to summarize recordings",
+    });
+  }
+});
+
+app.get("/recordings", async (request, response) => {
+  try {
+    const cameraId = normalizeCameraId(
+      request.query.cameraId,
+    );
+
+    const limit = parsePositiveInteger(
+      request.query.limit,
+      100,
+      500,
+    );
+
+    const recordings = await prisma.recording.findMany({
+      where: {
+        ...(cameraId ? { cameraId } : {}),
+        ...buildRecordingDateFilter(request),
+      },
+      orderBy: { startedAt: "desc" },
+      take: limit,
+    });
+
+    response.json({
+      ok: true,
+      count: recordings.length,
+      recordings: recordings.map((recording) =>
+        serializeRecording(recording, request),
+      ),
+    });
+  } catch (error) {
+    console.error("❌ Failed to list recordings:", error);
+
+    response.status(500).json({
+      ok: false,
+      error: "Failed to list recordings",
+    });
+  }
+});
+
+app.get(
+  "/recordings/camera/:cameraId",
+  async (request, response) => {
+    try {
+      const cameraId = normalizeCameraId(
+        request.params.cameraId,
+      );
+
+      const limit = parsePositiveInteger(
+        request.query.limit,
+        100,
+        500,
+      );
+
+      const recordings = await prisma.recording.findMany({
+        where: {
+          cameraId,
+          ...buildRecordingDateFilter(request),
+        },
+        orderBy: { startedAt: "desc" },
+        take: limit,
+      });
+
+      response.json({
+        ok: true,
+        cameraId,
+        count: recordings.length,
+        recordings: recordings.map((recording) =>
+          serializeRecording(recording, request),
+        ),
+      });
+    } catch (error) {
+      console.error(
+        "❌ Failed to list camera recordings:",
+        error,
+      );
+
+      response.status(500).json({
+        ok: false,
+        error: "Failed to list camera recordings",
+      });
+    }
+  },
+);
+
+app.get(
+  "/recordings/item/:recordingId/file",
+  async (request, response) => {
+    try {
+      const recording = await prisma.recording.findUnique({
+        where: { id: request.params.recordingId },
+      });
+
+      if (!recording) {
+        response.status(404).json({
+          ok: false,
+          error: "Recording not found",
+        });
+        return;
+      }
+
+      const { absolutePath } =
+        await storageManager.resolveRecordingPath(recording);
+
+      response.setHeader("Accept-Ranges", "bytes");
+      response.setHeader("Content-Type", "video/mp4");
+
+      response.sendFile(absolutePath, (error) => {
+        if (!error || response.headersSent) {
+          return;
+        }
+
+        console.error("❌ Failed to serve recording file:", error);
+        response.status(error.statusCode || 500).json({
+          ok: false,
+          error: "Failed to serve recording file",
+        });
+      });
+    } catch (error) {
+      console.error("❌ Failed to resolve recording file:", error);
+
+      response.status(500).json({
+        ok: false,
+        error: error.message || "Failed to resolve recording file",
+      });
+    }
+  },
+);
+
+app.get(
+  "/recordings/item/:recordingId",
+  async (request, response) => {
+    try {
+      const recording = await prisma.recording.findUnique({
+        where: { id: request.params.recordingId },
+      });
+
+      if (!recording) {
+        response.status(404).json({
+          ok: false,
+          error: "Recording not found",
+        });
+        return;
+      }
+
+      response.json({
+        ok: true,
+        recording: serializeRecording(recording, request),
+      });
+    } catch (error) {
+      console.error("❌ Failed to read recording:", error);
+
+      response.status(500).json({
+        ok: false,
+        error: "Failed to read recording",
+      });
+    }
+  },
+);
+
+app.patch(
+  "/recordings/:recordingId/lock",
+  express.json(),
+  async (request, response) => {
+    try {
+      if (typeof request.body?.isLocked !== "boolean") {
+        response.status(400).json({
+          ok: false,
+          error: "isLocked must be a boolean",
+        });
+        return;
+      }
+
+      const recording = await prisma.recording.update({
+        where: { id: request.params.recordingId },
+        data: { isLocked: request.body.isLocked },
+      });
+
+      response.json({
+        ok: true,
+        recording: serializeRecording(recording, request),
+      });
+    } catch (error) {
+      if (error.code === "P2025") {
+        response.status(404).json({
+          ok: false,
+          error: "Recording not found",
+        });
+        return;
+      }
+
+      console.error("❌ Failed to update recording lock:", error);
+
+      response.status(500).json({
+        ok: false,
+        error: "Failed to update recording lock",
+      });
+    }
+  },
+);
+
+app.delete(
+  "/recordings/:recordingId",
+  async (request, response) => {
+    try {
+      const recording = await prisma.recording.findUnique({
+        where: { id: request.params.recordingId },
+      });
+
+      if (!recording) {
+        response.status(404).json({
+          ok: false,
+          error: "Recording not found",
+        });
+        return;
+      }
+
+      if (recording.isLocked) {
+        response.status(409).json({
+          ok: false,
+          error:
+            "Recording is locked. Unlock it before deletion.",
+        });
+        return;
+      }
+
+      const { absolutePath: videoPath } =
+        await storageManager.resolveRecordingPath(recording);
+
+      const metadataPath = path.join(
+        path.dirname(videoPath),
+        `${recording.id}.json`,
+      );
+
+      await Promise.all([
+        fsp.rm(videoPath, { force: true }),
+        fsp.rm(metadataPath, { force: true }),
+      ]);
+
+      await prisma.recording.delete({
+        where: { id: recording.id },
+      });
+
+      response.json({
+        ok: true,
+        deletedRecordingId: recording.id,
+      });
+    } catch (error) {
+      console.error("❌ Failed to delete recording:", error);
+
+      response.status(500).json({
+        ok: false,
+        error: "Failed to delete recording",
+      });
+    }
+  },
+);
+
+app.use(
+  "/recordings/files",
+  express.static(RECORDINGS_ROOT, {
+    acceptRanges: true,
+    fallthrough: false,
+  }),
+);
+
+app.use(express.json({ limit: "50mb" }));
+
+registerStorageRoutes(app, {
+  prisma,
+  storageManager,
+});
+
+registerRetentionRoutes(app, {
+  prisma,
+  retentionManager,
+  storageManager,
+});
+
+io.on("connection", (socket) => {
+  console.log("\n🔌 NEW CONNECTION");
+  console.log("  Socket ID:", socket.id);
+  console.log("  Client IP:", socket.handshake.address);
+  console.log("  Transport:", socket.conn.transport.name);
+
+  socket.on("camera:register", (payload = {}, acknowledge) => {
+    const cameraId = normalizeCameraId(payload.cameraId);
+
+    const authenticatedCameraId =
+      normalizeCameraId(
+        socket.data.authenticatedCameraId,
+      );
+
+    if (
+      CCTV_SECURITY_REQUIRED &&
+      (
+        socket.data.securityRole !== "camera" ||
+        authenticatedCameraId !== cameraId
+      )
+    ) {
+      if (typeof acknowledge === "function") {
+        acknowledge({
+          ok: false,
+          error:
+            "Camera registration does not match the provisioned credential",
+        });
+      }
+
+      return;
+    }
+
+    if (!cameraId) {
+      console.warn(
+        "⚠️ Camera registration rejected: missing camera ID",
+      );
+
+      if (typeof acknowledge === "function") {
+        acknowledge({
+          ok: false,
+          error: "Camera ID is required",
+        });
+      }
+
+      return;
+    }
+
+    console.log("\n📱 CAMERA REGISTRATION");
+    console.log("  Camera ID:", cameraId);
+    console.log("  Socket ID:", socket.id);
+
+    const previousCamera = cameras.get(cameraId);
+
+    cameras.set(cameraId, {
+      socketId: socket.id,
+      connectedAt: Date.now(),
+      lastFrameAt: null,
+      frameCount: 0,
+      signalStatus: "waiting",
+      isRecording: false,
+    });
+
+    socket.data.cameraId = cameraId;
+    socket.join(`camera:${cameraId}`);
+
+    if (
+      previousCamera &&
+      previousCamera.socketId !== socket.id
+    ) {
+      const previousSocket = io.sockets.sockets.get(
+        previousCamera.socketId,
+      );
+
+      if (previousSocket) {
+        previousSocket.emit("camera:replaced", {
+          cameraId,
+        });
+
+        previousSocket.disconnect(true);
+      }
+    }
+
+    if (!frameCache.has(cameraId)) {
+      frameCache.set(cameraId, {
+        frame: null,
+        timestamp: null,
+        receivedAt: null,
+        frameCount: 0,
+      });
+    }
+
+    console.log("✅ Camera registered");
+    console.log("📊 Cameras connected:", cameras.size);
+
+    io.emit("camera:status", {
+      cameraId,
+      status: "idle",
+      timestamp: Date.now(),
+    });
+
+    if (typeof acknowledge === "function") {
+      acknowledge({
+        ok: true,
+        cameraId,
+      });
+    }
+  });
+
+  socket.on("camera:recording-status", (payload = {}) => {
+    const cameraId = normalizeCameraId(payload.cameraId);
+    const registeredCameraId = normalizeCameraId(
+      socket.data.cameraId,
+    );
+
+    if (!cameraId || cameraId !== registeredCameraId) {
+      return;
+    }
+
+    const camera = cameras.get(cameraId);
+
+    if (!camera || camera.socketId !== socket.id) {
+      return;
+    }
+
+    camera.isRecording = Boolean(payload.isRecording);
+    camera.signalStatus = camera.isRecording
+      ? "recording"
+      : "idle";
+
+    cameras.set(cameraId, camera);
+
+    console.log(
+      camera.isRecording
+        ? `🔴 MP4 recording started: ${cameraId}`
+        : `⏹️ MP4 recording stopped: ${cameraId}`,
+    );
+
+    io.emit("camera:status", {
+      cameraId,
+      status: camera.signalStatus,
+      isRecording: camera.isRecording,
+      segmentDurationSeconds: Number(
+        payload.segmentDurationSeconds,
+      ) || null,
+      timestamp: Date.now(),
+    });
+  });
+
+  socket.on("camera:frame", (payload = {}) => {
+    const cameraId = normalizeCameraId(payload.cameraId);
+    const registeredCameraId = normalizeCameraId(
+      socket.data.cameraId,
+    );
+
+    if (!cameraId || typeof payload.frame !== "string") {
+      console.warn("⚠️ Invalid camera frame payload");
+      return;
+    }
+
+    if (registeredCameraId !== cameraId) {
+      console.warn(
+        "⚠️ Frame camera ID does not match registration:",
+        {
+          registeredCameraId,
+          incomingCameraId: cameraId,
+        },
+      );
+
+      return;
+    }
+
+    const camera = cameras.get(cameraId);
+
+    if (!camera || camera.socketId !== socket.id) {
+      console.warn(
+        "⚠️ Frame rejected from inactive camera:",
+        cameraId,
+      );
+
+      return;
+    }
+
+    const receivedAt = Date.now();
+    const previousStatus = camera.signalStatus;
+
+    camera.frameCount += 1;
+    camera.lastFrameAt = receivedAt;
+    camera.signalStatus = "live";
+    camera.isRecording = false;
+
+    cameras.set(cameraId, camera);
+
+    frameCache.set(cameraId, {
+      frame: payload.frame,
+      timestamp: Number(payload.timestamp) || receivedAt,
+      receivedAt,
+      frameCount: camera.frameCount,
+    });
+
+    if (previousStatus !== "live") {
+      console.log("🟢 Camera signal live:", cameraId);
+
+      io.emit("camera:status", {
+        cameraId,
+        status: "live",
+        timestamp: receivedAt,
+      });
+    }
+
+    if (camera.frameCount % 10 === 0) {
+      const frameSizeKB =
+        (payload.frame.length * 0.75) / 1024;
+
+      console.log(
+        `📸 ${cameraId} | Frame #${camera.frameCount}` +
+          ` | ${frameSizeKB.toFixed(1)} KB` +
+          ` | Viewers: ${countCameraViewers(cameraId)}`,
+      );
+    }
+
+    io.to(getViewerRoom(cameraId))
+      .volatile.emit("camera:frame", {
+        cameraId,
+        frame: payload.frame,
+        timestamp: Number(payload.timestamp) || receivedAt,
+        receivedAt,
+        source: payload.source || "preview",
+        requestId: payload.requestId || null,
+      });
+  });
+
+  socket.on("viewer:watch", (payload = {}, acknowledge) => {
+    const cameraId = normalizeCameraId(payload.cameraId);
+
+    const viewerId =
+      normalizeCameraId(payload.viewerId) ||
+      `viewer-${socket.id}`;
+
+    if (!cameraId) {
+      if (typeof acknowledge === "function") {
+        acknowledge({
+          ok: false,
+          error: "Camera ID is required",
+        });
+      }
+
+      return;
+    }
+
+    console.log("\n👁️ VIEWER WATCH");
+    console.log("  Viewer ID:", viewerId);
+    console.log("  Camera ID:", cameraId);
+    console.log("  Socket ID:", socket.id);
+
+    const previousViewer = viewers.get(socket.id);
+
+    if (previousViewer) {
+      socket.leave(
+        getViewerRoom(previousViewer.cameraId),
+      );
+    }
+
+    viewers.set(socket.id, {
+      viewerId,
+      cameraId,
+      connectedAt: Date.now(),
+    });
+
+    socket.data.viewerCameraId = cameraId;
+    socket.join(getViewerRoom(cameraId));
+
+    const camera = cameras.get(cameraId);
+    const cachedFrame = frameCache.get(cameraId);
+
+    const cameraStatus = camera
+      ? camera.signalStatus
+      : "offline";
+
+    socket.emit("camera:status", {
+      cameraId,
+      status: cameraStatus,
+      isRecording: Boolean(camera?.isRecording),
+      timestamp: Date.now(),
+    });
+
+    if (cachedFrame && cachedFrame.frame) {
+      console.log("📤 Sending cached frame");
+
+      socket.emit("camera:frame", {
+        cameraId,
+        frame: cachedFrame.frame,
+        timestamp: cachedFrame.timestamp,
+        receivedAt: cachedFrame.receivedAt,
+      });
+    } else {
+      console.log(
+        "⚠️ No current frame for:",
+        cameraId,
+      );
+    }
+
+    console.log(
+      "📊 Viewers watching camera:",
+      countCameraViewers(cameraId),
+    );
+
+    if (typeof acknowledge === "function") {
+      acknowledge({
+        ok: true,
+        cameraId,
+        cameraStatus,
+      });
+    }
+  });
+
+  socket.on("viewer:unwatch", () => {
+    const viewer = viewers.get(socket.id);
+
+    if (!viewer) {
+      return;
+    }
+
+    socket.leave(getViewerRoom(viewer.cameraId));
+    viewers.delete(socket.id);
+    delete socket.data.viewerCameraId;
+
+    console.log(
+      "👁️ Viewer stopped watching:",
+      viewer.viewerId,
+    );
+  });
+
+  socket.on("disconnect", (reason) => {
+    console.log("\n🔌 DISCONNECTION");
+    console.log("  Socket ID:", socket.id);
+    console.log("  Reason:", reason);
+
+    const cameraId = normalizeCameraId(
+      socket.data.cameraId,
+    );
+
+    if (cameraId) {
+      const currentCamera = cameras.get(cameraId);
+
+      if (
+        currentCamera &&
+        currentCamera.socketId === socket.id
+      ) {
+        cameras.delete(cameraId);
+
+        console.log("🔴 Camera offline:", cameraId);
+
+        io.emit("camera:offline", {
+          cameraId,
+          reason,
+          timestamp: Date.now(),
+        });
+
+        io.emit("camera:status", {
+          cameraId,
+          status: "offline",
+          reason,
+          timestamp: Date.now(),
+        });
+      }
+    }
+
+    const viewer = viewers.get(socket.id);
+
+    if (viewer) {
+      viewers.delete(socket.id);
+
+      console.log(
+        "👁️ Viewer disconnected:",
+        viewer.viewerId,
+      );
+    }
+  });
+});
+
+setInterval(() => {
+  const now = Date.now();
+
+  cameras.forEach((camera, cameraId) => {
+    if (
+      camera.isRecording ||
+      !camera.previewActive
+    ) {
+      return;
+    }
+
+    const referenceTime =
+      camera.lastFrameAt || camera.connectedAt;
+
+    const frameAge = now - referenceTime;
+
+    if (
+      frameAge > CAMERA_NO_SIGNAL_TIMEOUT_MS &&
+      camera.signalStatus !== "no_signal"
+    ) {
+      camera.signalStatus = "no_signal";
+      cameras.set(cameraId, camera);
+
+      console.warn(
+        "🟠 No signal from camera:",
+        cameraId,
+      );
+
+      io.emit("camera:status", {
+        cameraId,
+        status: "no_signal",
+        timestamp: now,
+      });
+    }
+  });
+}, 2000);
+
+setInterval(() => {
+  if (cameras.size === 0 && viewers.size === 0) {
+    return;
+  }
+
+  console.log("\n📊 SERVER STATS");
+  console.log("  Connected cameras:", cameras.size);
+  console.log("  Active viewers:", viewers.size);
+  console.log("  Cached cameras:", frameCache.size);
+
+  cameras.forEach((camera, cameraId) => {
+    const frameAge =
+      camera.lastFrameAt === null
+        ? "N/A"
+        : `${(
+            (Date.now() - camera.lastFrameAt) /
+            1000
+          ).toFixed(1)}s`;
+
+    console.log(
+      `  📷 ${cameraId}` +
+        ` | ${normalizeCameraSignalStatus(cameraId)}` +
+        ` | Frames: ${camera.frameCount}` +
+        ` | Last frame: ${frameAge}` +
+        ` | Viewers: ${countCameraViewers(cameraId)}`,
+    );
+  });
+}, STATS_INTERVAL_MS);
+
+async function shutdown(signal) {
+  console.log(`\n🧹 Received ${signal}; shutting down CCTV server`);
+
+  httpServer.close(async () => {
+    await prisma.$disconnect();
+    process.exit(0);
+  });
+
+  setTimeout(async () => {
+    await prisma.$disconnect().catch(() => undefined);
+    process.exit(1);
+  }, 10000).unref();
+}
+
+process.once("SIGINT", () => {
+  void shutdown("SIGINT");
+});
+
+process.once("SIGTERM", () => {
+  void shutdown("SIGTERM");
+});
+
+async function initializeStorageManager() {
+  const defaultStorageTarget =
+    await storageManager.ensureDefaultStorageTarget();
+
+  console.log(
+    "💾 Default storage target:",
+    `${defaultStorageTarget.name} → ${defaultStorageTarget.rootPath}`,
+  );
+}
+
+void initializeStorageManager()
+  .then(() => {
+    retentionManager.startScheduler();
+  })
+  .catch((error) => {
+    console.error(
+      "❌ Storage manager initialization failed:",
+      error,
+    );
+  });
+
+
+function getPreviewRequestSet(cameraId) {
+  let requestSet = previewRequests.get(cameraId);
+
+  if (!requestSet) {
+    requestSet = new Set();
+    previewRequests.set(cameraId, requestSet);
+  }
+
+  return requestSet;
+}
+
+function getEffectiveCameraSignalStatus(
+  cameraId,
+  camera,
+) {
+  if (!camera) {
+    return "offline";
+  }
+
+  if (camera.isRecording) {
+    return "recording";
+  }
+
+  if (camera.webrtcLive) {
+    return "live";
+  }
+
+  const previewViewerCount =
+    previewRequests.get(cameraId)?.size || 0;
+
+  const previewExpected =
+    previewViewerCount > 0 ||
+    Boolean(camera.previewActive);
+
+  if (!previewExpected) {
+    return "idle";
+  }
+
+  if (
+    camera.signalStatus === "live" ||
+    camera.signalStatus === "no_signal"
+  ) {
+    return camera.signalStatus;
+  }
+
+  return "waiting";
+}
+
+function normalizeCameraSignalStatus(cameraId) {
+  const camera = cameras.get(cameraId);
+
+  if (!camera) {
+    return "offline";
+  }
+
+  const normalizedStatus =
+    getEffectiveCameraSignalStatus(
+      cameraId,
+      camera,
+    );
+
+  if (camera.signalStatus !== normalizedStatus) {
+    camera.signalStatus = normalizedStatus;
+    cameras.set(cameraId, camera);
+  }
+
+  return normalizedStatus;
+}
+
+function buildCameraHealthPayload(cameraId) {
+  const camera = cameras.get(cameraId);
+  const phoneHealth = cameraHealth.get(cameraId) || null;
+
+  return {
+    cameraId,
+    connected: Boolean(camera),
+    signalStatus:
+      getEffectiveCameraSignalStatus(
+        cameraId,
+        camera,
+      ),
+    isRecording: Boolean(camera?.isRecording),
+    previewActive: Boolean(camera?.previewActive),
+    mediaTransport:
+      camera?.mediaTransport ||
+      phoneHealth?.payload?.transport ||
+      "legacy",
+    webrtcLive: Boolean(
+      camera?.webrtcLive ||
+      phoneHealth?.payload?.webrtcLive,
+    ),
+    viewerCount: countCameraViewers(cameraId),
+    previewViewerCount:
+      previewRequests.get(cameraId)?.size || 0,
+    frameCount: Number(camera?.frameCount || 0),
+    lastFrameAt: camera?.lastFrameAt || null,
+    lastHeartbeatAt:
+      phoneHealth?.receivedAt || null,
+    health: phoneHealth?.payload || null,
+    timestamp: Date.now(),
+  };
+}
+
+function emitCameraHealth(cameraId) {
+  io.to(getViewerRoom(cameraId)).emit(
+    "camera:health",
+    buildCameraHealthPayload(cameraId),
+  );
+}
+
+function emitCameraHealthToSocket(
+  socket,
+  cameraId,
+) {
+  socket.emit(
+    "camera:health",
+    buildCameraHealthPayload(cameraId),
+  );
+}
+
+function syncOnDemandPreview(cameraId) {
+  const camera = cameras.get(cameraId);
+
+  if (!camera) {
+    return false;
+  }
+
+  const requestSet = previewRequests.get(cameraId);
+  const shouldPreview =
+    Boolean(requestSet && requestSet.size > 0);
+
+  camera.previewActive = shouldPreview;
+
+  if (!camera.isRecording) {
+    camera.signalStatus =
+      getEffectiveCameraSignalStatus(
+        cameraId,
+        camera,
+      );
+  }
+
+  cameras.set(cameraId, camera);
+
+  const cameraSocket = io.sockets.sockets.get(
+    camera.socketId,
+  );
+
+  cameraSocket?.emit(
+    shouldPreview
+      ? "camera:preview:start"
+      : "camera:preview:stop",
+    {
+      cameraId,
+      timestamp: Date.now(),
+    },
+  );
+
+  io.to(getViewerRoom(cameraId)).emit(
+    "camera:status",
+    {
+      cameraId,
+      status: camera.isRecording
+        ? "recording"
+        : shouldPreview
+          ? "waiting"
+          : "idle",
+      timestamp: Date.now(),
+    },
+  );
+
+  emitCameraHealth(cameraId);
+
+  return shouldPreview;
+}
+
+function removeViewerPreviewRequests(socketId) {
+  const affectedCameraIds = [];
+
+  previewRequests.forEach(
+    (requestSet, cameraId) => {
+      if (requestSet.delete(socketId)) {
+        affectedCameraIds.push(cameraId);
+      }
+
+      if (requestSet.size === 0) {
+        previewRequests.delete(cameraId);
+      }
+    },
+  );
+
+  affectedCameraIds.forEach(
+    syncOnDemandPreview,
+  );
+}
+
+// Patch 09 uses a second Socket.IO connection listener so the
+// existing camera, viewer, recording, and storage handlers remain intact.
+io.on("connection", (socket) => {
+  socket.on(
+    "viewer:watch",
+    (payload = {}) => {
+      const cameraId = normalizeCameraId(
+        payload.cameraId,
+      );
+
+      setTimeout(() => {
+        const viewer = viewers.get(socket.id);
+
+        if (
+          viewer &&
+          viewer.cameraId === cameraId
+        ) {
+          emitCameraHealthToSocket(
+            socket,
+            cameraId,
+          );
+        }
+      }, 50);
+    },
+  );
+
+  socket.on(
+    "viewer:health:get",
+    (payload = {}, acknowledge) => {
+      const cameraId = normalizeCameraId(
+        payload.cameraId,
+      );
+
+      const viewer = viewers.get(socket.id);
+
+      if (
+        !viewer ||
+        viewer.cameraId !== cameraId
+      ) {
+        acknowledge?.({
+          ok: false,
+          error:
+            "Viewer is not watching this camera",
+        });
+        return;
+      }
+
+      const health =
+        buildCameraHealthPayload(cameraId);
+
+      emitCameraHealthToSocket(
+        socket,
+        cameraId,
+      );
+
+      acknowledge?.({
+        ok: true,
+        health,
+      });
+    },
+  );
+
+  socket.on(
+    "viewer:preview:start",
+    (payload = {}, acknowledge) => {
+      const cameraId = normalizeCameraId(
+        payload.cameraId,
+      );
+
+      const viewer = viewers.get(socket.id);
+      const camera = cameras.get(cameraId);
+
+      if (
+        !viewer ||
+        viewer.cameraId !== cameraId
+      ) {
+        acknowledge?.({
+          ok: false,
+          error: "Viewer is not watching this camera",
+        });
+        return;
+      }
+
+      if (!camera) {
+        acknowledge?.({
+          ok: false,
+          error: "Camera is offline",
+        });
+        return;
+      }
+
+      getPreviewRequestSet(cameraId).add(
+        socket.id,
+      );
+
+      acknowledge?.({
+        ok: true,
+        previewActive:
+          syncOnDemandPreview(cameraId),
+      });
+    },
+  );
+
+  socket.on(
+    "viewer:preview:stop",
+    (payload = {}, acknowledge) => {
+      const cameraId = normalizeCameraId(
+        payload.cameraId,
+      );
+
+      const requestSet =
+        previewRequests.get(cameraId);
+
+      requestSet?.delete(socket.id);
+
+      if (requestSet?.size === 0) {
+        previewRequests.delete(cameraId);
+      }
+
+      acknowledge?.({
+        ok: true,
+        previewActive:
+          syncOnDemandPreview(cameraId),
+      });
+    },
+  );
+
+  socket.on(
+    "viewer:snapshot",
+    (payload = {}, acknowledge) => {
+      const cameraId = normalizeCameraId(
+        payload.cameraId,
+      );
+
+      const viewer = viewers.get(socket.id);
+      const camera = cameras.get(cameraId);
+
+      if (
+        !viewer ||
+        viewer.cameraId !== cameraId
+      ) {
+        acknowledge?.({
+          ok: false,
+          error: "Viewer is not watching this camera",
+        });
+        return;
+      }
+
+      if (!camera) {
+        acknowledge?.({
+          ok: false,
+          error: "Camera is offline",
+        });
+        return;
+      }
+
+      const requestId =
+        normalizeCameraId(payload.requestId) ||
+        `snapshot-${Date.now()}`;
+
+      const cameraSocket =
+        io.sockets.sockets.get(camera.socketId);
+
+      cameraSocket?.emit(
+        "camera:snapshot:request",
+        {
+          cameraId,
+          requestId,
+          timestamp: Date.now(),
+        },
+      );
+
+      acknowledge?.({
+        ok: true,
+        requestId,
+      });
+    },
+  );
+
+  socket.on(
+    "camera:health",
+    (payload = {}) => {
+      const cameraId = normalizeCameraId(
+        payload.cameraId,
+      );
+
+      if (
+        !cameraId ||
+        cameraId !==
+          normalizeCameraId(socket.data.cameraId)
+      ) {
+        return;
+      }
+
+      cameraHealth.set(cameraId, {
+        receivedAt: Date.now(),
+        payload: {
+          appState: payload.appState || "unknown",
+          captureMode:
+            payload.captureMode || "unknown",
+          transport:
+            payload.transport || "legacy",
+          webrtcLive:
+            Boolean(payload.webrtcLive),
+          cameraReady:
+            Boolean(payload.cameraReady),
+          previewActive:
+            Boolean(payload.previewActive),
+          pendingUploads:
+            Number(payload.pendingUploads || 0),
+          retryingUploads:
+            Number(payload.retryingUploads || 0),
+          uploadedSegments:
+            Number(payload.uploadedSegments || 0),
+          recordedSegments:
+            Number(payload.recordedSegments || 0),
+          fps: Number(payload.fps || 0),
+        },
+      });
+
+      const camera = cameras.get(cameraId);
+
+      if (camera) {
+        camera.previewActive =
+          Boolean(payload.previewActive);
+        camera.mediaTransport =
+          payload.transport ||
+          camera.mediaTransport ||
+          "legacy";
+        camera.webrtcLive =
+          Boolean(payload.webrtcLive);
+        // Explicit camera:recording-status events are authoritative.
+        camera.isRecording = Boolean(camera.isRecording);
+        camera.signalStatus =
+          getEffectiveCameraSignalStatus(
+            cameraId,
+            camera,
+          );
+
+        cameras.set(cameraId, camera);
+      }
+
+      emitCameraHealth(cameraId);
+    },
+  );
+
+  socket.on(
+    "camera:snapshot:error",
+    (payload = {}) => {
+      const cameraId = normalizeCameraId(
+        payload.cameraId,
+      );
+
+      if (
+        !cameraId ||
+        cameraId !==
+          normalizeCameraId(socket.data.cameraId)
+      ) {
+        return;
+      }
+
+      io.to(getViewerRoom(cameraId)).emit(
+        "camera:snapshot:error",
+        {
+          cameraId,
+          requestId:
+            normalizeCameraId(payload.requestId) ||
+            null,
+          error:
+            normalizeCameraId(payload.error) ||
+            "Snapshot failed",
+          timestamp: Date.now(),
+        },
+      );
+    },
+  );
+
+  socket.on("viewer:unwatch", () => {
+    removeViewerPreviewRequests(socket.id);
+  });
+
+  socket.on("disconnect", () => {
+    removeViewerPreviewRequests(socket.id);
+  });
+});
+
+app.get(
+  "/health/cameras",
+  (_request, response) => {
+    const cameraIds = new Set([
+      ...cameras.keys(),
+      ...cameraHealth.keys(),
+    ]);
+
+    response.json({
+      ok: true,
+      cameraCount: cameraIds.size,
+      cameras: Array.from(cameraIds).map(
+        buildCameraHealthPayload,
+      ),
+      timestamp: Date.now(),
+    });
+  },
+);
+
+// PATCH_09_ON_DEMAND_SNAPSHOT_HEALTH
+// PATCH_10_SECURE_LAN_PROVISIONING
+// PATCH_10A_CAMERA_CREDENTIAL_RESYNC
+
+const cameraHealthBroadcastTimer =
+  setInterval(() => {
+    cameras.forEach((_camera, cameraId) => {
+      emitCameraHealth(cameraId);
+    });
+  }, 5000);
+
+cameraHealthBroadcastTimer.unref?.();
+
+httpServer.listen(PORT, HOST, () => {
+  console.log("\n✅ CCTV SOCKET SERVER RUNNING");
+  console.log(`🌐 Network: http://${SERVER_IP}:${PORT}`);
+  console.log(`🔧 Listening on: ${HOST}:${PORT}`);
+  console.log("📦 Maximum frame payload: 10 MB");
+  console.log("🎞️ MP4 recording upload enabled");
+  console.log(`📁 Recordings: ${RECORDINGS_ROOT}`);
+  console.log("⚡ Socket transport: WebSocket");
+  console.log(
+    "🔐 CCTV security:",
+    CCTV_SECURITY_REQUIRED
+      ? "ENFORCED"
+      : "DISABLED",
+  );
+  console.log(
+    `🔗 Signed playback URL lifetime: ${CCTV_PLAYBACK_URL_TTL_SECONDS}s`,
+  );
+  console.log(
+    `❤️ Health check: http://${SERVER_IP}:${PORT}/health\n`,
+  );
+});
+// PATCH_10C_IDLE_STATUS_NORMALIZATION
+// PATCH_10D_DASHBOARD_HEALTH_SYNC
+
+// PATCH_10G_RECOVER_AND_REPAIR_NATIVE_STATE
+
+// PATCH_10G_H_CONTEXT_AWARE_VALIDATION
+
+// PATCH_11A_WEBRTC_ONLY_LIVE_STREAM_FOUNDATION
+
+// PATCH_11F_LIVEKIT_CLOUD_LOCAL_PROFILES

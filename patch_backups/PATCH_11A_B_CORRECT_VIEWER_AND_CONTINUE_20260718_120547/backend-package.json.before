@@ -1,0 +1,48 @@
+{
+  "name": "backend-nextjs",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "node server.js",
+    "server": "",
+    "build": "next build",
+    "start": "NODE_ENV=production node server.js",
+    "lint": "eslint"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0",
+    "@radix-ui/react-dialog": "^1.1.15",
+    "@radix-ui/react-dropdown-menu": "^2.1.16",
+    "bcryptjs": "^3.0.3",
+    "clsx": "^2.1.1",
+    "cors": "^2.8.6",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "firebase-admin": "^13.6.0",
+    "jsonwebtoken": "^9.0.3",
+    "livekit-server-sdk": "^2.17.0",
+    "lucide-react": "^0.562.0",
+    "next": "16.1.4",
+    "next-auth": "^4.24.13",
+    "node-telegram-bot-api": "^0.67.0",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-native-vlc-media-player": "^1.0.98",
+    "socket.io": "^4.8.3",
+    "tailwind-merge": "^3.4.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/node": "^20.19.30",
+    "@types/node-telegram-bot-api": "^0.64.13",
+    "@types/react": "^19.2.9",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.1.4",
+    "prisma": "^5.22.0",
+    "tailwindcss": "^4",
+    "typescript": "^5.9.3"
+  }
+}

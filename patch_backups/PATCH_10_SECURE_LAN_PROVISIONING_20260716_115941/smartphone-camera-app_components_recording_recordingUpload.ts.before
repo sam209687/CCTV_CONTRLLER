@@ -1,0 +1,110 @@
+import * as FileSystem from "expo-file-system/legacy";
+
+import {
+  RECORDING_UPLOAD_TIMEOUT_MS,
+} from "./recordingConfig";
+
+export interface RecordingUploadInput {
+  fileUri: string;
+  fileName: string;
+  cameraId: string;
+  serverUrl: string;
+  startedAt: string;
+  durationSeconds: number;
+  uploadId?: string;
+  checksumMd5?: string | null;
+}
+
+export interface RecordingUploadResult {
+  id: string;
+  cameraId: string;
+  fileName: string;
+  fileUrl: string;
+  sizeBytes: number;
+  startedAt: string;
+  durationSeconds: number;
+}
+
+function normalizeServerUrl(serverUrl: string): string {
+  return serverUrl.trim().replace(/\/+$/, "");
+}
+
+export async function uploadRecordingSegment({
+  fileUri,
+  fileName,
+  cameraId,
+  serverUrl,
+  startedAt,
+  durationSeconds,
+  uploadId,
+  checksumMd5,
+}: RecordingUploadInput): Promise<RecordingUploadResult> {
+  const uploadUrl =
+    `${normalizeServerUrl(serverUrl)}/recordings/upload`;
+
+  const timeout = setTimeout(() => {
+    console.warn(
+      `⚠️ MP4 upload is taking longer than ${
+        RECORDING_UPLOAD_TIMEOUT_MS / 1000
+      } seconds`,
+    );
+  }, RECORDING_UPLOAD_TIMEOUT_MS);
+
+  try {
+    const response = await FileSystem.uploadAsync(
+      uploadUrl,
+      fileUri,
+      {
+        httpMethod: "POST",
+        uploadType:
+          FileSystem.FileSystemUploadType.BINARY_CONTENT,
+        headers: {
+          "Content-Type": "video/mp4",
+          "X-Camera-Id": cameraId,
+          "X-Recording-File-Name": fileName,
+          "X-Recording-Started-At": startedAt,
+          "X-Recording-Duration-Seconds":
+            String(durationSeconds),
+          ...(uploadId
+            ? {
+                "X-Upload-Id": uploadId,
+              }
+            : {}),
+          ...(checksumMd5
+            ? {
+                "X-Content-MD5": checksumMd5,
+              }
+            : {}),
+        },
+      },
+    );
+
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(
+        `Upload failed with HTTP ${response.status}: ${
+          response.body || "No response body"
+        }`,
+      );
+    }
+
+    const parsed = JSON.parse(response.body) as {
+      ok?: boolean;
+      recording?: RecordingUploadResult;
+      error?: string;
+    };
+
+    if (!parsed.ok || !parsed.recording) {
+      throw new Error(
+        parsed.error || "Recording server rejected the upload",
+      );
+    }
+
+    await FileSystem.deleteAsync(fileUri, {
+      idempotent: true,
+    });
+
+    return parsed.recording;
+  } finally {
+    clearTimeout(timeout);
+  }
+}

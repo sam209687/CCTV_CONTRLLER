@@ -1,0 +1,346 @@
+// components/layout/Sidebar.tsx
+import React, { useState } from 'react';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  ScrollView,
+  Animated,
+} from 'react-native';
+import { router, usePathname } from 'expo-router';
+import { useTheme } from '@/contexts/ThemeContext';
+import { useAuth } from '@/contexts/AuthContext';
+
+interface MenuItem {
+  id: string;
+  label: string;
+  icon: string;
+  route: string;
+  badge?: number;
+}
+
+interface SidebarProps {
+  isOpen: boolean;
+  onClose: () => void;
+}
+
+export default function Sidebar({ isOpen, onClose }: SidebarProps) {
+  const { colors, isDark } = useTheme();
+  const { user, logout } = useAuth();
+  const pathname = usePathname();
+
+  const menuItems: MenuItem[] = [
+    { id: 'dashboard', label: 'Dashboard', icon: '📊', route: '/(main)/dashboard' },
+    { id: 'cameras', label: 'Cameras', icon: '📹', route: '/(main)/cameras' },
+    { id: 'events', label: 'Events', icon: '🎬', route: '/(main)/events', badge: 3 },
+    { id: 'analytics', label: 'Analytics', icon: '📈', route: '/(main)/analytics' },
+    { id: 'settings', label: 'Settings', icon: '⚙️', route: '/(main)/settings' },
+  ];
+
+  const handleNavigate = (route: string) => {
+    // @ts-ignore
+    router.push(route);
+    onClose();
+  };
+
+  const handleLogout = async () => {
+    await logout();
+    // @ts-ignore
+    router.replace('/(auth)/login');
+  };
+
+  return (
+    <View style={[styles.container, { backgroundColor: colors.surface }]}>
+      {/* Header */}
+      <View style={[styles.header, { borderBottomColor: colors.border }]}>
+        <View style={styles.logoContainer}>
+          <Text style={styles.logoIcon}>📹</Text>
+          <View>
+            <Text style={[styles.logoText, { color: colors.text }]}>
+              CCTV Monitor
+            </Text>
+            <Text style={[styles.logoSubtext, { color: colors.textSecondary }]}>
+              Enterprise Edition
+            </Text>
+          </View>
+        </View>
+        
+        <TouchableOpacity onPress={onClose} style={styles.closeButton}>
+          <Text style={[styles.closeIcon, { color: colors.text }]}>✕</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* User Info */}
+      <View style={[styles.userInfo, { backgroundColor: colors.background }]}>
+        <View style={[styles.avatar, { backgroundColor: colors.primary }]}>
+          <Text style={styles.avatarText}>
+            {user?.name?.charAt(0).toUpperCase() || 'U'}
+          </Text>
+        </View>
+        <View style={styles.userDetails}>
+          <Text style={[styles.userName, { color: colors.text }]}>
+            {user?.name || 'User'}
+          </Text>
+          <Text style={[styles.userEmail, { color: colors.textSecondary }]}>
+            {user?.email}
+          </Text>
+        </View>
+        <View style={[styles.badge, { backgroundColor: colors.success }]}>
+          <Text style={styles.badgeText}>Pro</Text>
+        </View>
+      </View>
+
+      {/* Menu Items */}
+      <ScrollView style={styles.menu} showsVerticalScrollIndicator={false}>
+        <View style={styles.menuSection}>
+          <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>
+            MAIN MENU
+          </Text>
+          {menuItems.map((item) => {
+            const isActive = pathname.includes(item.route);
+            return (
+              <TouchableOpacity
+                key={item.id}
+                style={[
+                  styles.menuItem,
+                  isActive && {
+                    backgroundColor: colors.primary + '15',
+                    borderLeftWidth: 3,
+                    borderLeftColor: colors.primary,
+                  },
+                ]}
+                onPress={() => handleNavigate(item.route)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.menuIcon}>{item.icon}</Text>
+                <Text
+                  style={[
+                    styles.menuLabel,
+                    {
+                      color: isActive ? colors.primary : colors.text,
+                      fontWeight: isActive ? '600' : '400',
+                    },
+                  ]}
+                >
+                  {item.label}
+                </Text>
+                {item.badge && (
+                  <View style={[styles.itemBadge, { backgroundColor: colors.error }]}>
+                    <Text style={styles.itemBadgeText}>{item.badge}</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
+        {/* Quick Actions */}
+        <View style={styles.menuSection}>
+          <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>
+            QUICK ACTIONS
+          </Text>
+          <TouchableOpacity
+            style={[styles.actionButton, { backgroundColor: colors.primary }]}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.actionIcon}>➕</Text>
+            <Text style={styles.actionText}>Add Camera</Text>
+          </TouchableOpacity>
+        </View>
+      </ScrollView>
+
+      {/* Footer */}
+      <View style={[styles.footer, { borderTopColor: colors.border }]}>
+        <TouchableOpacity
+          style={styles.footerButton}
+          onPress={() => {
+            // @ts-ignore
+            router.push('/(main)/help');
+            onClose();
+          }}
+        >
+          <Text style={styles.footerIcon}>❓</Text>
+          <Text style={[styles.footerText, { color: colors.textSecondary }]}>
+            Help & Support
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.logoutButton, { backgroundColor: colors.error + '15' }]}
+          onPress={handleLogout}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.logoutIcon}>🚪</Text>
+          <Text style={[styles.logoutText, { color: colors.error }]}>
+            Logout
+          </Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    width: 280,
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    borderBottomWidth: 1,
+  },
+  logoContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  logoIcon: {
+    fontSize: 32,
+  },
+  logoText: {
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  logoSubtext: {
+    fontSize: 11,
+    marginTop: 2,
+  },
+  closeButton: {
+    padding: 4,
+  },
+  closeIcon: {
+    fontSize: 24,
+  },
+  userInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+    margin: 12,
+    borderRadius: 12,
+    gap: 12,
+  },
+  avatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarText: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+  },
+  userDetails: {
+    flex: 1,
+  },
+  userName: {
+    fontSize: 15,
+    fontWeight: '600',
+    marginBottom: 2,
+  },
+  userEmail: {
+    fontSize: 12,
+  },
+  badge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  badgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  menu: {
+    flex: 1,
+    paddingHorizontal: 12,
+  },
+  menuSection: {
+    marginBottom: 24,
+  },
+  sectionTitle: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    marginBottom: 8,
+    marginLeft: 12,
+  },
+  menuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 14,
+    borderRadius: 10,
+    marginBottom: 4,
+    gap: 12,
+  },
+  menuIcon: {
+    fontSize: 20,
+  },
+  menuLabel: {
+    flex: 1,
+    fontSize: 15,
+  },
+  itemBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 10,
+  },
+  itemBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  actionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 14,
+    borderRadius: 10,
+    gap: 8,
+  },
+  actionIcon: {
+    fontSize: 18,
+  },
+  actionText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  footer: {
+    padding: 12,
+    borderTopWidth: 1,
+    gap: 8,
+  },
+  footerButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    gap: 10,
+  },
+  footerIcon: {
+    fontSize: 18,
+  },
+  footerText: {
+    fontSize: 14,
+  },
+  logoutButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 12,
+    borderRadius: 8,
+    gap: 8,
+  },
+  logoutIcon: {
+    fontSize: 18,
+  },
+  logoutText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+});

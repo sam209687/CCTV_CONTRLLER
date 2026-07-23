@@ -1,0 +1,1787 @@
+// app/(main)/storage/index.tsx
+//
+// Storage Manager — local disk, external drive, mounted NAS and NVR
+// recording destinations.
+
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  Modal,
+  Platform,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+  useWindowDimensions,
+} from "react-native";
+import { useRouter } from "expo-router";
+
+import { useTheme } from "@/contexts/ThemeContext";
+import {
+  createStorageTarget,
+  deleteStorageTarget,
+  getRecordingServerUrl,
+  listStorageCandidates,
+  listStorageTargets,
+  setDefaultStorageTarget,
+  testStorageTarget,
+  updateStorageTarget,
+  type StorageCandidate,
+  type StorageTarget,
+  type StorageTargetType,
+} from "@/services/storageTargets";
+
+function formatBytes(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "0 B";
+  }
+
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+  const unitIndex = Math.min(
+    Math.floor(Math.log(value) / Math.log(1024)),
+    units.length - 1,
+  );
+  const converted = value / 1024 ** unitIndex;
+
+  return `${converted.toFixed(converted >= 100 ? 0 : 1)} ${
+    units[unitIndex]
+  }`;
+}
+
+function getUsagePercent(target: StorageTarget): number {
+  if (target.totalBytes <= 0) {
+    return 0;
+  }
+
+  return Math.max(
+    0,
+    Math.min(100, (target.usedBytes / target.totalBytes) * 100),
+  );
+}
+
+function storageTypeLabel(type: StorageTargetType): string {
+  switch (type) {
+    case "EXTERNAL_DRIVE":
+      return "External HDD / SSD";
+    case "NAS":
+      return "NAS / Network Folder";
+    case "NVR":
+      return "DVR / NVR Share";
+    default:
+      return "Local Computer";
+  }
+}
+
+function storageTypeIcon(type: StorageTargetType): string {
+  switch (type) {
+    case "EXTERNAL_DRIVE":
+      return "💽";
+    case "NAS":
+      return "🌐";
+    case "NVR":
+      return "🎛️";
+    default:
+      return "💻";
+  }
+}
+
+export default function StorageSettingsScreen() {
+  const { colors } = useTheme();
+  const router = useRouter();
+  const { width } = useWindowDimensions();
+  const compact = width < 760;
+
+  const [targets, setTargets] = useState<StorageTarget[]>([]);
+  const [candidates, setCandidates] = useState<
+    StorageCandidate[]
+  >([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [workingTargetId, setWorkingTargetId] =
+    useState<string | null>(null);
+  const [showAddModal, setShowAddModal] = useState(false);
+
+  const [nameInput, setNameInput] = useState("");
+  const [pathInput, setPathInput] = useState("");
+  const [typeInput, setTypeInput] =
+    useState<StorageTargetType>("EXTERNAL_DRIVE");
+  const [makeDefaultInput, setMakeDefaultInput] =
+    useState(false);
+  const [savingNewTarget, setSavingNewTarget] =
+    useState(false);
+
+  const serverUrl = useMemo(() => {
+    try {
+      return getRecordingServerUrl();
+    } catch {
+      return "Unavailable";
+    }
+  }, []);
+
+  const defaultTarget = useMemo(
+    () => targets.find((target) => target.isDefault) || null,
+    [targets],
+  );
+
+  const totalCapacity = useMemo(
+    () =>
+      targets.reduce(
+        (sum, target) =>
+          target.isEnabled && target.status === "AVAILABLE"
+            ? sum + target.totalBytes
+            : sum,
+        0,
+      ),
+    [targets],
+  );
+
+  const totalAvailable = useMemo(
+    () =>
+      targets.reduce(
+        (sum, target) =>
+          target.isEnabled && target.status === "AVAILABLE"
+            ? sum + target.availableBytes
+            : sum,
+        0,
+      ),
+    [targets],
+  );
+
+  const availableTargets = useMemo(
+    () =>
+      targets.filter(
+        (target) =>
+          target.isEnabled && target.status === "AVAILABLE",
+      ).length,
+    [targets],
+  );
+
+  const loadData = useCallback(async (): Promise<void> => {
+    try {
+      const [loadedTargets, loadedCandidates] =
+        await Promise.all([
+          listStorageTargets(),
+          listStorageCandidates(),
+        ]);
+
+      setTargets(loadedTargets);
+      setCandidates(loadedCandidates);
+    } catch (error: any) {
+      console.error("Failed to load storage settings:", error);
+      Alert.alert(
+        "Storage loading failed",
+        error?.message ||
+          "The storage settings could not be loaded.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadData();
+  }, [loadData]);
+
+  async function refreshData(): Promise<void> {
+    setRefreshing(true);
+
+    try {
+      await loadData();
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  function resetAddForm(): void {
+    setNameInput("");
+    setPathInput("");
+    setTypeInput("EXTERNAL_DRIVE");
+    setMakeDefaultInput(false);
+  }
+
+  function openCandidate(candidate: StorageCandidate): void {
+    const name =
+      candidate.source === "home-suggestion"
+        ? "Home CCTV Recordings"
+        : candidate.source === "current-recordings-root"
+          ? "Local Recordings"
+          : `Storage ${candidate.rootPath}`;
+
+    setNameInput(name);
+    setPathInput(candidate.rootPath);
+    setTypeInput(
+      candidate.source === "linux-mount"
+        ? "EXTERNAL_DRIVE"
+        : "LOCAL",
+    );
+    setShowAddModal(true);
+  }
+
+  async function addTarget(): Promise<void> {
+    const name = nameInput.trim();
+    const rootPath = pathInput.trim();
+
+    if (!name) {
+      Alert.alert(
+        "Storage name required",
+        "Enter a name such as Shop CCTV HDD.",
+      );
+      return;
+    }
+
+    if (!rootPath) {
+      Alert.alert(
+        "Storage path required",
+        "Enter a mounted folder path.",
+      );
+      return;
+    }
+
+    setSavingNewTarget(true);
+
+    try {
+      const created = await createStorageTarget({
+        name,
+        type: typeInput,
+        rootPath,
+        isDefault: makeDefaultInput,
+      });
+
+      setTargets((current) => [
+        created,
+        ...current.filter(
+          (target) => target.id !== created.id,
+        ),
+      ]);
+
+      setShowAddModal(false);
+      resetAddForm();
+      await loadData();
+
+      Alert.alert(
+        "Storage added",
+        `${created.name} is ready for recording tests.`,
+      );
+    } catch (error: any) {
+      Alert.alert(
+        "Storage could not be added",
+        error?.message || "The backend rejected this path.",
+      );
+    } finally {
+      setSavingNewTarget(false);
+    }
+  }
+
+  async function runTargetAction(
+    target: StorageTarget,
+    action:
+      | "test"
+      | "default"
+      | "toggle"
+      | "delete",
+  ): Promise<void> {
+    setWorkingTargetId(target.id);
+
+    try {
+      if (action === "test") {
+        const updated = await testStorageTarget(target.id);
+
+        Alert.alert(
+          updated.status === "AVAILABLE"
+            ? "Storage test passed"
+            : "Storage test failed",
+          updated.status === "AVAILABLE"
+            ? `${updated.name} is writable with ${formatBytes(
+                updated.availableBytes,
+              )} available.`
+            : updated.lastError ||
+                "The target is not currently available.",
+        );
+      }
+
+      if (action === "default") {
+        await setDefaultStorageTarget(target.id);
+
+        Alert.alert(
+          "Default storage changed",
+          `New recordings will be stored in ${target.name}.`,
+        );
+      }
+
+      if (action === "toggle") {
+        await updateStorageTarget(target.id, {
+          isEnabled: !target.isEnabled,
+        });
+      }
+
+      if (action === "delete") {
+        if (target.isDefault) {
+          Alert.alert(
+            "Default storage cannot be deleted",
+            "Choose another default destination first.",
+          );
+          return;
+        }
+
+        const performDelete = async (): Promise<void> => {
+          await deleteStorageTarget(target.id);
+          await loadData();
+        };
+
+        if (
+          Platform.OS === "web" &&
+          typeof window !== "undefined"
+        ) {
+          const confirmed = window.confirm(
+            `Remove "${target.name}" from storage settings?\n\n` +
+              "Existing recording files will not be deleted.",
+          );
+
+          if (confirmed) {
+            await performDelete();
+          }
+        } else {
+          Alert.alert(
+            "Remove storage target",
+            `Remove "${target.name}"? Existing files remain untouched.`,
+            [
+              { text: "Cancel", style: "cancel" },
+              {
+                text: "Remove",
+                style: "destructive",
+                onPress: () => {
+                  void performDelete();
+                },
+              },
+            ],
+          );
+        }
+      }
+
+      await loadData();
+    } catch (error: any) {
+      Alert.alert(
+        "Storage action failed",
+        error?.message || "The storage action could not finish.",
+      );
+    } finally {
+      setWorkingTargetId(null);
+    }
+  }
+
+  return (
+    <View
+      style={[
+        pageStyles.screen,
+        { backgroundColor: colors.background },
+      ]}
+    >
+      <View
+        style={[
+          pageStyles.header,
+          {
+            backgroundColor: colors.surface,
+            borderBottomColor: colors.border,
+          },
+        ]}
+      >
+        <TouchableOpacity
+          style={[
+            pageStyles.backButton,
+            { borderColor: colors.border },
+          ]}
+          onPress={() => router.back()}
+        >
+          <Text
+            style={[
+              pageStyles.backButtonText,
+              { color: colors.text },
+            ]}
+          >
+            ← Cameras
+          </Text>
+        </TouchableOpacity>
+
+        <View style={pageStyles.headerText}>
+          <Text
+            style={[
+              pageStyles.title,
+              { color: colors.text },
+            ]}
+          >
+            Recording Storage
+          </Text>
+          <Text
+            style={[
+              pageStyles.subtitle,
+              { color: colors.textSecondary },
+            ]}
+          >
+            Select where MP4 recordings are saved and monitor
+            storage health.
+          </Text>
+        </View>
+
+        <TouchableOpacity
+          style={[
+            pageStyles.primaryButton,
+            { backgroundColor: colors.primary },
+          ]}
+          onPress={() => {
+            resetAddForm();
+            setShowAddModal(true);
+          }}
+        >
+          <Text style={pageStyles.primaryButtonText}>
+            + Add Storage
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      <ScrollView
+        style={pageStyles.scroll}
+        contentContainerStyle={pageStyles.scrollContent}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => void refreshData()}
+          />
+        }
+      >
+        <View
+          style={[
+            pageStyles.serverBanner,
+            {
+              backgroundColor: `${colors.primary}15`,
+              borderColor: `${colors.primary}55`,
+            },
+          ]}
+        >
+          <Text style={pageStyles.serverIcon}>🗄️</Text>
+          <View style={{ flex: 1 }}>
+            <Text
+              style={[
+                pageStyles.serverLabel,
+                { color: colors.textSecondary },
+              ]}
+            >
+              Recording backend
+            </Text>
+            <Text
+              selectable
+              style={[
+                pageStyles.serverValue,
+                { color: colors.text },
+              ]}
+            >
+              {serverUrl}
+            </Text>
+          </View>
+        </View>
+
+        <View
+          style={[
+            pageStyles.summaryGrid,
+            compact && pageStyles.summaryGridCompact,
+          ]}
+        >
+          <SummaryCard
+            label="Default destination"
+            value={defaultTarget?.name || "Not configured"}
+            icon="🎯"
+            colors={colors}
+          />
+          <SummaryCard
+            label="Available targets"
+            value={`${availableTargets} of ${targets.length}`}
+            icon="✅"
+            colors={colors}
+          />
+          <SummaryCard
+            label="Combined capacity"
+            value={formatBytes(totalCapacity)}
+            icon="💾"
+            colors={colors}
+          />
+          <SummaryCard
+            label="Space available"
+            value={formatBytes(totalAvailable)}
+            icon="📊"
+            colors={colors}
+          />
+        </View>
+
+        <View style={pageStyles.sectionHeader}>
+          <View>
+            <Text
+              style={[
+                pageStyles.sectionTitle,
+                { color: colors.text },
+              ]}
+            >
+              Storage destinations
+            </Text>
+            <Text
+              style={[
+                pageStyles.sectionDescription,
+                { color: colors.textSecondary },
+              ]}
+            >
+              New MP4 clips are written to the default available
+              destination.
+            </Text>
+          </View>
+
+          <TouchableOpacity
+            onPress={() => void refreshData()}
+          >
+            <Text
+              style={[
+                pageStyles.refreshText,
+                { color: colors.primary },
+              ]}
+            >
+              Refresh
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {loading ? (
+          <View style={pageStyles.loadingPanel}>
+            <ActivityIndicator
+              size="large"
+              color={colors.primary}
+            />
+            <Text
+              style={[
+                pageStyles.loadingText,
+                { color: colors.textSecondary },
+              ]}
+            >
+              Checking storage devices...
+            </Text>
+          </View>
+        ) : targets.length === 0 ? (
+          <View
+            style={[
+              pageStyles.emptyPanel,
+              { backgroundColor: colors.surface },
+            ]}
+          >
+            <Text style={pageStyles.emptyIcon}>💾</Text>
+            <Text
+              style={[
+                pageStyles.emptyTitle,
+                { color: colors.text },
+              ]}
+            >
+              No recording destination
+            </Text>
+            <Text
+              style={[
+                pageStyles.emptyText,
+                { color: colors.textSecondary },
+              ]}
+            >
+              Add a local folder, external disk, NAS, or mounted
+              NVR share.
+            </Text>
+          </View>
+        ) : (
+          <View style={pageStyles.targetList}>
+            {targets.map((target) => (
+              <StorageTargetCard
+                key={target.id}
+                target={target}
+                colors={colors}
+                busy={workingTargetId === target.id}
+                onTest={() =>
+                  void runTargetAction(target, "test")
+                }
+                onDefault={() =>
+                  void runTargetAction(target, "default")
+                }
+                onToggle={() =>
+                  void runTargetAction(target, "toggle")
+                }
+                onDelete={() =>
+                  void runTargetAction(target, "delete")
+                }
+              />
+            ))}
+          </View>
+        )}
+
+        <View style={pageStyles.sectionHeader}>
+          <View>
+            <Text
+              style={[
+                pageStyles.sectionTitle,
+                { color: colors.text },
+              ]}
+            >
+              Detected locations
+            </Text>
+            <Text
+              style={[
+                pageStyles.sectionDescription,
+                { color: colors.textSecondary },
+              ]}
+            >
+              These paths were detected by the backend computer.
+            </Text>
+          </View>
+        </View>
+
+        <View style={pageStyles.candidateList}>
+          {candidates.map((candidate) => (
+            <TouchableOpacity
+              key={`${candidate.rootPath}-${candidate.source}`}
+              style={[
+                pageStyles.candidateCard,
+                {
+                  backgroundColor: colors.surface,
+                  borderColor: colors.border,
+                },
+              ]}
+              onPress={() => openCandidate(candidate)}
+              disabled={!candidate.writable}
+            >
+              <Text style={pageStyles.candidateIcon}>
+                {candidate.writable ? "📁" : "🔒"}
+              </Text>
+              <View style={{ flex: 1 }}>
+                <Text
+                  selectable
+                  style={[
+                    pageStyles.candidatePath,
+                    { color: colors.text },
+                  ]}
+                >
+                  {candidate.rootPath}
+                </Text>
+                <Text
+                  style={[
+                    pageStyles.candidateMeta,
+                    { color: colors.textSecondary },
+                  ]}
+                >
+                  {candidate.source}
+                  {candidate.filesystemType
+                    ? ` · ${candidate.filesystemType}`
+                    : ""}
+                  {` · ${formatBytes(
+                    candidate.availableBytes,
+                  )} available`}
+                </Text>
+              </View>
+              <Text
+                style={[
+                  pageStyles.candidateStatus,
+                  {
+                    color: candidate.writable
+                      ? colors.success
+                      : colors.error,
+                  },
+                ]}
+              >
+                {candidate.writable ? "Add" : "Read only"}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      </ScrollView>
+
+      <AddStorageModal
+        visible={showAddModal}
+        colors={colors}
+        name={nameInput}
+        rootPath={pathInput}
+        type={typeInput}
+        makeDefault={makeDefaultInput}
+        saving={savingNewTarget}
+        onNameChange={setNameInput}
+        onRootPathChange={setPathInput}
+        onTypeChange={setTypeInput}
+        onMakeDefaultChange={setMakeDefaultInput}
+        onSave={() => void addTarget()}
+        onClose={() => {
+          if (!savingNewTarget) {
+            setShowAddModal(false);
+          }
+        }}
+      />
+    </View>
+  );
+}
+
+function SummaryCard({
+  label,
+  value,
+  icon,
+  colors,
+}: {
+  label: string;
+  value: string;
+  icon: string;
+  colors: ReturnType<typeof useTheme>["colors"];
+}) {
+  return (
+    <View
+      style={[
+        pageStyles.summaryCard,
+        {
+          backgroundColor: colors.surface,
+          borderColor: colors.border,
+        },
+      ]}
+    >
+      <Text style={pageStyles.summaryIcon}>{icon}</Text>
+      <Text
+        style={[
+          pageStyles.summaryLabel,
+          { color: colors.textSecondary },
+        ]}
+      >
+        {label}
+      </Text>
+      <Text
+        numberOfLines={2}
+        style={[
+          pageStyles.summaryValue,
+          { color: colors.text },
+        ]}
+      >
+        {value}
+      </Text>
+    </View>
+  );
+}
+
+function StorageTargetCard({
+  target,
+  colors,
+  busy,
+  onTest,
+  onDefault,
+  onToggle,
+  onDelete,
+}: {
+  target: StorageTarget;
+  colors: ReturnType<typeof useTheme>["colors"];
+  busy: boolean;
+  onTest: () => void;
+  onDefault: () => void;
+  onToggle: () => void;
+  onDelete: () => void;
+}) {
+  const usagePercent = getUsagePercent(target);
+  const healthy =
+    target.status === "AVAILABLE" && target.isEnabled;
+
+  return (
+    <View
+      style={[
+        pageStyles.targetCard,
+        {
+          backgroundColor: colors.surface,
+          borderColor: target.isDefault
+            ? colors.primary
+            : colors.border,
+        },
+      ]}
+    >
+      <View style={pageStyles.targetHeader}>
+        <View
+          style={[
+            pageStyles.targetIconBox,
+            { backgroundColor: `${colors.primary}15` },
+          ]}
+        >
+          <Text style={pageStyles.targetIcon}>
+            {storageTypeIcon(target.type)}
+          </Text>
+        </View>
+
+        <View style={{ flex: 1 }}>
+          <View style={pageStyles.targetNameRow}>
+            <Text
+              style={[
+                pageStyles.targetName,
+                { color: colors.text },
+              ]}
+            >
+              {target.name}
+            </Text>
+            {target.isDefault && (
+              <View
+                style={[
+                  pageStyles.defaultBadge,
+                  { backgroundColor: colors.primary },
+                ]}
+              >
+                <Text style={pageStyles.defaultBadgeText}>
+                  DEFAULT
+                </Text>
+              </View>
+            )}
+          </View>
+          <Text
+            style={[
+              pageStyles.targetType,
+              { color: colors.textSecondary },
+            ]}
+          >
+            {storageTypeLabel(target.type)}
+          </Text>
+        </View>
+
+        <View
+          style={[
+            pageStyles.healthBadge,
+            {
+              backgroundColor: healthy
+                ? `${colors.success}20`
+                : `${colors.error}20`,
+            },
+          ]}
+        >
+          <Text
+            style={[
+              pageStyles.healthBadgeText,
+              {
+                color: healthy
+                  ? colors.success
+                  : colors.error,
+              },
+            ]}
+          >
+            {target.isEnabled ? target.status : "DISABLED"}
+          </Text>
+        </View>
+      </View>
+
+      <View
+        style={[
+          pageStyles.pathBox,
+          { backgroundColor: colors.background },
+        ]}
+      >
+        <Text
+          style={[
+            pageStyles.pathLabel,
+            { color: colors.textSecondary },
+          ]}
+        >
+          Folder path
+        </Text>
+        <Text
+          selectable
+          style={[
+            pageStyles.pathValue,
+            { color: colors.text },
+          ]}
+        >
+          {target.rootPath}
+        </Text>
+      </View>
+
+      <View style={pageStyles.capacityHeader}>
+        <Text
+          style={[
+            pageStyles.capacityText,
+            { color: colors.text },
+          ]}
+        >
+          {formatBytes(target.usedBytes)} used
+        </Text>
+        <Text
+          style={[
+            pageStyles.capacityText,
+            { color: colors.textSecondary },
+          ]}
+        >
+          {formatBytes(target.availableBytes)} available
+        </Text>
+      </View>
+
+      <View
+        style={[
+          pageStyles.progressTrack,
+          { backgroundColor: colors.border },
+        ]}
+      >
+        <View
+          style={[
+            pageStyles.progressFill,
+            {
+              width: `${usagePercent}%`,
+              backgroundColor:
+                usagePercent >= 90
+                  ? colors.error
+                  : usagePercent >= 75
+                    ? colors.warning
+                    : colors.success,
+            },
+          ]}
+        />
+      </View>
+
+      <Text
+        style={[
+          pageStyles.capacityCaption,
+          { color: colors.textSecondary },
+        ]}
+      >
+        {usagePercent.toFixed(1)}% of{" "}
+        {formatBytes(target.totalBytes)} used
+      </Text>
+
+      {target.lastError && (
+        <View
+          style={[
+            pageStyles.errorPanel,
+            { backgroundColor: `${colors.error}15` },
+          ]}
+        >
+          <Text
+            style={[
+              pageStyles.errorPanelText,
+              { color: colors.error },
+            ]}
+          >
+            {target.lastError}
+          </Text>
+        </View>
+      )}
+
+      <View style={pageStyles.targetActions}>
+        <SmallAction
+          label={busy ? "Working..." : "Test"}
+          colors={colors}
+          disabled={busy}
+          onPress={onTest}
+        />
+        {!target.isDefault && (
+          <SmallAction
+            label="Make Default"
+            colors={colors}
+            disabled={busy || !healthy}
+            primary
+            onPress={onDefault}
+          />
+        )}
+        <SmallAction
+          label={target.isEnabled ? "Disable" : "Enable"}
+          colors={colors}
+          disabled={busy || target.isDefault}
+          onPress={onToggle}
+        />
+        {!target.isDefault && (
+          <SmallAction
+            label="Remove"
+            colors={colors}
+            disabled={busy}
+            danger
+            onPress={onDelete}
+          />
+        )}
+      </View>
+    </View>
+  );
+}
+
+function SmallAction({
+  label,
+  colors,
+  disabled,
+  primary,
+  danger,
+  onPress,
+}: {
+  label: string;
+  colors: ReturnType<typeof useTheme>["colors"];
+  disabled: boolean;
+  primary?: boolean;
+  danger?: boolean;
+  onPress: () => void;
+}) {
+  const backgroundColor = disabled
+    ? colors.border
+    : primary
+      ? colors.primary
+      : danger
+        ? `${colors.error}15`
+        : colors.background;
+
+  const textColor = disabled
+    ? colors.textSecondary
+    : primary
+      ? "#FFFFFF"
+      : danger
+        ? colors.error
+        : colors.text;
+
+  return (
+    <TouchableOpacity
+      style={[
+        pageStyles.smallAction,
+        {
+          backgroundColor,
+          borderColor: danger
+            ? `${colors.error}55`
+            : colors.border,
+        },
+      ]}
+      disabled={disabled}
+      onPress={onPress}
+    >
+      <Text
+        style={[
+          pageStyles.smallActionText,
+          { color: textColor },
+        ]}
+      >
+        {label}
+      </Text>
+    </TouchableOpacity>
+  );
+}
+
+function AddStorageModal({
+  visible,
+  colors,
+  name,
+  rootPath,
+  type,
+  makeDefault,
+  saving,
+  onNameChange,
+  onRootPathChange,
+  onTypeChange,
+  onMakeDefaultChange,
+  onSave,
+  onClose,
+}: {
+  visible: boolean;
+  colors: ReturnType<typeof useTheme>["colors"];
+  name: string;
+  rootPath: string;
+  type: StorageTargetType;
+  makeDefault: boolean;
+  saving: boolean;
+  onNameChange: (value: string) => void;
+  onRootPathChange: (value: string) => void;
+  onTypeChange: (value: StorageTargetType) => void;
+  onMakeDefaultChange: (value: boolean) => void;
+  onSave: () => void;
+  onClose: () => void;
+}) {
+  const types: StorageTargetType[] = [
+    "LOCAL",
+    "EXTERNAL_DRIVE",
+    "NAS",
+    "NVR",
+  ];
+
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={onClose}
+    >
+      <View style={pageStyles.modalBackdrop}>
+        <ScrollView
+          contentContainerStyle={pageStyles.modalScroll}
+          keyboardShouldPersistTaps="handled"
+        >
+          <View
+            style={[
+              pageStyles.modalCard,
+              { backgroundColor: colors.surface },
+            ]}
+          >
+            <View style={pageStyles.modalHeader}>
+              <View style={{ flex: 1 }}>
+                <Text
+                  style={[
+                    pageStyles.modalTitle,
+                    { color: colors.text },
+                  ]}
+                >
+                  Add Recording Storage
+                </Text>
+                <Text
+                  style={[
+                    pageStyles.modalDescription,
+                    { color: colors.textSecondary },
+                  ]}
+                >
+                  Use a local folder or a folder already mounted by
+                  Ubuntu from an HDD, NAS, DVR, or NVR.
+                </Text>
+              </View>
+
+              <TouchableOpacity
+                style={pageStyles.modalClose}
+                disabled={saving}
+                onPress={onClose}
+              >
+                <Text
+                  style={[
+                    pageStyles.modalCloseText,
+                    { color: colors.text },
+                  ]}
+                >
+                  ✕
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            <Text
+              style={[
+                pageStyles.inputLabel,
+                { color: colors.text },
+              ]}
+            >
+              Storage name
+            </Text>
+            <TextInput
+              value={name}
+              onChangeText={onNameChange}
+              editable={!saving}
+              placeholder="Shop CCTV External HDD"
+              placeholderTextColor={colors.textSecondary}
+              style={[
+                pageStyles.input,
+                {
+                  color: colors.text,
+                  backgroundColor: colors.background,
+                  borderColor: colors.border,
+                },
+              ]}
+            />
+
+            <Text
+              style={[
+                pageStyles.inputLabel,
+                { color: colors.text },
+              ]}
+            >
+              Storage type
+            </Text>
+            <View style={pageStyles.typeGrid}>
+              {types.map((item) => {
+                const selected = item === type;
+
+                return (
+                  <TouchableOpacity
+                    key={item}
+                    style={[
+                      pageStyles.typeButton,
+                      {
+                        borderColor: selected
+                          ? colors.primary
+                          : colors.border,
+                        backgroundColor: selected
+                          ? `${colors.primary}15`
+                          : colors.background,
+                      },
+                    ]}
+                    disabled={saving}
+                    onPress={() => onTypeChange(item)}
+                  >
+                    <Text style={pageStyles.typeIcon}>
+                      {storageTypeIcon(item)}
+                    </Text>
+                    <Text
+                      style={[
+                        pageStyles.typeText,
+                        {
+                          color: selected
+                            ? colors.primary
+                            : colors.text,
+                        },
+                      ]}
+                    >
+                      {storageTypeLabel(item)}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            <Text
+              style={[
+                pageStyles.inputLabel,
+                { color: colors.text },
+              ]}
+            >
+              Mounted folder path
+            </Text>
+            <TextInput
+              value={rootPath}
+              onChangeText={onRootPathChange}
+              editable={!saving}
+              autoCapitalize="none"
+              autoCorrect={false}
+              placeholder="/media/rs/CCTV_HDD/CCTV_Recordings"
+              placeholderTextColor={colors.textSecondary}
+              style={[
+                pageStyles.input,
+                {
+                  color: colors.text,
+                  backgroundColor: colors.background,
+                  borderColor: colors.border,
+                },
+              ]}
+            />
+            <Text
+              style={[
+                pageStyles.helpText,
+                { color: colors.textSecondary },
+              ]}
+            >
+              The folder must be visible and writable on the backend
+              computer. A cloud-sharing URL is not a filesystem path.
+            </Text>
+
+            <TouchableOpacity
+              style={[
+                pageStyles.defaultChoice,
+                {
+                  backgroundColor: makeDefault
+                    ? `${colors.primary}15`
+                    : colors.background,
+                  borderColor: makeDefault
+                    ? colors.primary
+                    : colors.border,
+                },
+              ]}
+              disabled={saving}
+              onPress={() =>
+                onMakeDefaultChange(!makeDefault)
+              }
+            >
+              <View
+                style={[
+                  pageStyles.checkbox,
+                  {
+                    borderColor: makeDefault
+                      ? colors.primary
+                      : colors.border,
+                    backgroundColor: makeDefault
+                      ? colors.primary
+                      : "transparent",
+                  },
+                ]}
+              >
+                {makeDefault && (
+                  <Text style={pageStyles.checkboxText}>✓</Text>
+                )}
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text
+                  style={[
+                    pageStyles.defaultChoiceTitle,
+                    { color: colors.text },
+                  ]}
+                >
+                  Use as default recording destination
+                </Text>
+                <Text
+                  style={[
+                    pageStyles.defaultChoiceText,
+                    { color: colors.textSecondary },
+                  ]}
+                >
+                  New MP4 segments will be stored here after the
+                  target passes its write test.
+                </Text>
+              </View>
+            </TouchableOpacity>
+
+            <View style={pageStyles.modalActions}>
+              <TouchableOpacity
+                style={[
+                  pageStyles.cancelButton,
+                  { borderColor: colors.border },
+                ]}
+                disabled={saving}
+                onPress={onClose}
+              >
+                <Text
+                  style={[
+                    pageStyles.cancelButtonText,
+                    { color: colors.text },
+                  ]}
+                >
+                  Cancel
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  pageStyles.saveButton,
+                  {
+                    backgroundColor: saving
+                      ? colors.border
+                      : colors.primary,
+                  },
+                ]}
+                disabled={saving}
+                onPress={onSave}
+              >
+                <Text style={pageStyles.saveButtonText}>
+                  {saving ? "Adding..." : "Add Storage"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </ScrollView>
+      </View>
+    </Modal>
+  );
+}
+
+const pageStyles = StyleSheet.create({
+  screen: {
+    flex: 1,
+  },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    gap: 16,
+  },
+  backButton: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderRadius: 10,
+  },
+  backButtonText: {
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  headerText: {
+    flex: 1,
+  },
+  title: {
+    fontSize: 23,
+    fontWeight: "900",
+  },
+  subtitle: {
+    fontSize: 13,
+    marginTop: 3,
+  },
+  primaryButton: {
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    borderRadius: 10,
+  },
+  primaryButtonText: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  scroll: {
+    flex: 1,
+  },
+  scrollContent: {
+    padding: 20,
+    paddingBottom: 48,
+  },
+  serverBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 16,
+    borderWidth: 1,
+    borderRadius: 14,
+    gap: 14,
+  },
+  serverIcon: {
+    fontSize: 28,
+  },
+  serverLabel: {
+    fontSize: 11,
+    fontWeight: "700",
+    textTransform: "uppercase",
+  },
+  serverValue: {
+    fontSize: 14,
+    fontWeight: "700",
+    marginTop: 4,
+  },
+  summaryGrid: {
+    flexDirection: "row",
+    gap: 12,
+    marginTop: 18,
+  },
+  summaryGridCompact: {
+    flexWrap: "wrap",
+  },
+  summaryCard: {
+    flex: 1,
+    minWidth: 155,
+    minHeight: 120,
+    padding: 16,
+    borderWidth: 1,
+    borderRadius: 14,
+  },
+  summaryIcon: {
+    fontSize: 25,
+    marginBottom: 10,
+  },
+  summaryLabel: {
+    fontSize: 12,
+  },
+  summaryValue: {
+    fontSize: 18,
+    fontWeight: "900",
+    marginTop: 5,
+  },
+  sectionHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-end",
+    marginTop: 28,
+    marginBottom: 14,
+    gap: 14,
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: "900",
+  },
+  sectionDescription: {
+    fontSize: 13,
+    marginTop: 4,
+  },
+  refreshText: {
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  loadingPanel: {
+    minHeight: 180,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  loadingText: {
+    marginTop: 12,
+    fontSize: 13,
+  },
+  emptyPanel: {
+    padding: 42,
+    borderRadius: 16,
+    alignItems: "center",
+  },
+  emptyIcon: {
+    fontSize: 50,
+  },
+  emptyTitle: {
+    fontSize: 19,
+    fontWeight: "900",
+    marginTop: 12,
+  },
+  emptyText: {
+    fontSize: 13,
+    marginTop: 7,
+    textAlign: "center",
+  },
+  targetList: {
+    gap: 14,
+  },
+  targetCard: {
+    padding: 18,
+    borderWidth: 1,
+    borderRadius: 16,
+  },
+  targetHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 13,
+  },
+  targetIconBox: {
+    width: 50,
+    height: 50,
+    borderRadius: 13,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  targetIcon: {
+    fontSize: 26,
+  },
+  targetNameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  targetName: {
+    fontSize: 17,
+    fontWeight: "900",
+  },
+  targetType: {
+    fontSize: 12,
+    marginTop: 4,
+  },
+  defaultBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  defaultBadgeText: {
+    color: "#FFFFFF",
+    fontSize: 9,
+    fontWeight: "900",
+  },
+  healthBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 8,
+  },
+  healthBadgeText: {
+    fontSize: 10,
+    fontWeight: "900",
+  },
+  pathBox: {
+    marginTop: 16,
+    padding: 13,
+    borderRadius: 10,
+  },
+  pathLabel: {
+    fontSize: 11,
+    marginBottom: 5,
+  },
+  pathValue: {
+    fontSize: 13,
+    fontFamily: Platform.OS === "web" ? "monospace" : undefined,
+  },
+  capacityHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginTop: 16,
+    gap: 12,
+  },
+  capacityText: {
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  progressTrack: {
+    height: 9,
+    borderRadius: 6,
+    overflow: "hidden",
+    marginTop: 9,
+  },
+  progressFill: {
+    height: "100%",
+    borderRadius: 6,
+  },
+  capacityCaption: {
+    fontSize: 11,
+    marginTop: 7,
+  },
+  errorPanel: {
+    marginTop: 13,
+    padding: 11,
+    borderRadius: 9,
+  },
+  errorPanelText: {
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  targetActions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 17,
+  },
+  smallAction: {
+    paddingHorizontal: 13,
+    paddingVertical: 9,
+    borderWidth: 1,
+    borderRadius: 9,
+  },
+  smallActionText: {
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  candidateList: {
+    gap: 10,
+  },
+  candidateCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 14,
+    borderWidth: 1,
+    borderRadius: 12,
+    gap: 12,
+  },
+  candidateIcon: {
+    fontSize: 23,
+  },
+  candidatePath: {
+    fontSize: 13,
+    fontWeight: "800",
+    fontFamily: Platform.OS === "web" ? "monospace" : undefined,
+  },
+  candidateMeta: {
+    fontSize: 11,
+    marginTop: 4,
+  },
+  candidateStatus: {
+    fontSize: 11,
+    fontWeight: "900",
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(15,23,42,0.78)",
+  },
+  modalScroll: {
+    flexGrow: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 20,
+  },
+  modalCard: {
+    width: "100%",
+    maxWidth: 660,
+    padding: 22,
+    borderRadius: 18,
+  },
+  modalHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 14,
+    marginBottom: 18,
+  },
+  modalTitle: {
+    fontSize: 21,
+    fontWeight: "900",
+  },
+  modalDescription: {
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: 5,
+  },
+  modalClose: {
+    width: 40,
+    height: 40,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  modalCloseText: {
+    fontSize: 25,
+  },
+  inputLabel: {
+    fontSize: 13,
+    fontWeight: "800",
+    marginTop: 15,
+    marginBottom: 7,
+  },
+  input: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 13,
+    paddingVertical: 12,
+    fontSize: 14,
+  },
+  helpText: {
+    fontSize: 11,
+    lineHeight: 17,
+    marginTop: 7,
+  },
+  typeGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 9,
+  },
+  typeButton: {
+    width: "48%",
+    minHeight: 82,
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 1,
+    borderRadius: 11,
+    padding: 10,
+  },
+  typeIcon: {
+    fontSize: 23,
+  },
+  typeText: {
+    fontSize: 11,
+    fontWeight: "800",
+    marginTop: 6,
+    textAlign: "center",
+  },
+  defaultChoice: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    padding: 14,
+    borderWidth: 1,
+    borderRadius: 11,
+    gap: 11,
+    marginTop: 17,
+  },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderWidth: 2,
+    borderRadius: 6,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  checkboxText: {
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  defaultChoiceTitle: {
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  defaultChoiceText: {
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 3,
+  },
+  modalActions: {
+    flexDirection: "row",
+    gap: 11,
+    marginTop: 22,
+  },
+  cancelButton: {
+    flex: 1,
+    alignItems: "center",
+    paddingVertical: 13,
+    borderWidth: 1,
+    borderRadius: 10,
+  },
+  cancelButtonText: {
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  saveButton: {
+    flex: 2,
+    alignItems: "center",
+    paddingVertical: 13,
+    borderRadius: 10,
+  },
+  saveButtonText: {
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "900",
+  },
+});

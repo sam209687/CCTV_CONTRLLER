@@ -34,3 +34,19 @@ You can check out [the Next.js GitHub repository](https://github.com/vercel/next
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
 
 Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+To get IP adress
+hostname -I | awk '{print $1}'
+
+<!-- Start the Node server -->
+cd ~/Videos/backend-nextjs
+node server.js
+
+<!-- Start the smartphone application: -->
+
+cd ~/Videos/backend-nextjs/smartphone-camera-app
+npx expo start --clear --port 8081
+
+<!-- Start the dashboard: -->
+
+cd ~/Videos/backend-nextjs/CCTV/mobile-app
+npx expo start --web --clear --port 8082

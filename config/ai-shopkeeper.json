@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "cameras": {
+    "cam-1772515015057": {
+      "cameraId": "cam-1772515015057",
+      "customerZone": [
+        0,
+        0,
+        0.65,
+        1
+      ],
+      "staffZone": [
+        0.65,
+        0,
+        1,
+        1
+      ],
+      "updatedAt": "2026-08-03T05:23:02.207Z"
+    }
+  }
+}

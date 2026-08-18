@@ -150,6 +150,55 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
+async def index_local_metadata(metadata_path: Path) -> dict[str, Any] | None:
+    enabled = str(
+        os.getenv("CCTV_RECORDING_AUTO_INDEX", "true")
+    ).strip().lower() not in {"0", "false", "no", "off"}
+
+    if not enabled:
+        return None
+
+    project_root = Path(__file__).resolve().parents[1]
+    script = project_root / "scripts" / "index_local_recordings.js"
+
+    if not script.is_file():
+        LOG.warning("Recording index script is missing: %s", script)
+        return None
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            str(os.getenv("CCTV_RECORDING_INDEX_NODE", "node")),
+            str(script),
+            "--metadata",
+            str(metadata_path),
+            "--json",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            raise RuntimeError(
+                stderr.decode("utf-8", errors="replace").strip()
+                or stdout.decode("utf-8", errors="replace").strip()
+                or f"indexer exited with code {process.returncode}"
+            )
+
+        payload = json.loads(stdout.decode("utf-8"))
+        LOG.info(
+            "Indexed segment in SQLite: %s",
+            metadata_path,
+        )
+        return payload
+    except Exception as error:
+        LOG.exception(
+            "Segment finalized but SQLite indexing failed for %s: %s",
+            metadata_path,
+            error,
+        )
+        return None
+
+
 def normalize_rgb_frame(
     frame: rtc.VideoFrame,
     rotation: int,
@@ -1054,6 +1103,12 @@ class ContinuousRecorder:
             "phase": "11I-L2",
             "recordingMode": "CONTINUOUS_LOCAL_SEGMENT",
             "cameraId": self.config.camera_id,
+            "fileName": final_path.name,
+            "relativeFilePath": final_path.relative_to(
+                self.config.recordings_root
+            ).as_posix(),
+            "storageRoot": str(self.config.recordings_root),
+            "uploadedAt": ended_at.isoformat(),
             "roomName": self.config.room_name,
             "cameraIdentity": self.config.camera_identity,
             "trackSid": getattr(publication, "sid", None),
@@ -1083,6 +1138,7 @@ class ContinuousRecorder:
             **final_probe,
         }
         atomic_write_json(metadata_path, metadata)
+        await index_local_metadata(metadata_path)
 
         LOG.info(
             "Finalized segment %s: %.2fs, %.2f MB, %s frames",
@@ -1198,11 +1254,17 @@ class ContinuousRecorder:
                 "phase": "11I-L2",
                 "recordingMode": "RECOVERED_STALE_PARTIAL",
                 "cameraId": self.config.camera_id,
+                "fileName": recovered_path.name,
+                "relativeFilePath": recovered_path.relative_to(
+                    self.config.recordings_root
+                ).as_posix(),
+                "storageRoot": str(self.config.recordings_root),
                 "recoveredAt": iso_now(),
                 "filePath": str(recovered_path),
                 **probe,
             },
         )
+        await index_local_metadata(metadata_path)
         LOG.info("Recovered stale partial: %s", recovered_path)
         return recovered_path
 

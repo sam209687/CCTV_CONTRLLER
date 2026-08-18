@@ -127,35 +127,53 @@ async function requestNotificationPermission(): Promise<boolean> {
   );
 }
 
+// PATCH_11J_C0_AUTO_RECOVERY_V1
 async function requestCredentials(): Promise<LiveKitCredentials> {
-  const response = await fetch(
-    `${CCTV_BACKEND_URL}/webrtc/token/camera`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Camera-Id": CAMERA_ID,
-        "X-Camera-Token": CCTV_CAMERA_TOKEN,
-      },
-      body: JSON.stringify({
-        cameraId: CAMERA_ID,
-      }),
-    },
-  );
+  let response: Response;
 
-  const value = await response.json();
+  try {
+    response = await fetch(
+      `${CCTV_BACKEND_URL}/webrtc/token/camera`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Camera-Id": CAMERA_ID,
+          "X-Camera-Token": CCTV_CAMERA_TOKEN,
+        },
+        body: JSON.stringify({ cameraId: CAMERA_ID }),
+      },
+    );
+  } catch {
+    throw new Error(
+      "Network unavailable · waiting to reconnect",
+    );
+  }
+
+  const rawBody = await response.text();
+  let value: any = {};
+
+  if (rawBody.trim()) {
+    try {
+      value = JSON.parse(rawBody);
+    } catch {
+      if (!response.ok) {
+        throw new Error(
+          `Backend temporarily unavailable (HTTP ${response.status})`,
+        );
+      }
+      throw new Error("Backend returned an invalid response");
+    }
+  }
 
   if (!response.ok) {
     throw new Error(
       value?.error ||
-        "Camera WebRTC token request failed",
+        `Camera server request failed (HTTP ${response.status})`,
     );
   }
 
-  if (
-    !value?.server_url ||
-    !value?.participant_token
-  ) {
+  if (!value?.server_url || !value?.participant_token) {
     throw new Error(
       "Backend returned invalid LiveKit credentials",
     );
@@ -206,6 +224,13 @@ export default function App() {
   const socketRef = useRef<Socket | null>(null);
   const webrtcLiveRef = useRef(false);
   const foregroundServiceRunningRef = useRef(false);
+  const desiredStreamingRef = useRef(false);
+  const recoveryInFlightRef = useRef(false);
+  const recoveryAttemptRef = useRef(0);
+  const recoveryTimerRef =
+    useRef<ReturnType<typeof setTimeout> | null>(null);
+  const controlDisconnectedAtRef =
+    useRef<number | null>(null);
 
   const [credentials, setCredentials] =
     useState<LiveKitCredentials | null>(null);
@@ -306,6 +331,92 @@ export default function App() {
     void loadNativeServiceStatus();
   }, []);
 
+  const recoverWebRTCStream = async (
+    force = false,
+  ): Promise<void> => {
+    if (
+      !desiredStreamingRef.current ||
+      recoveryInFlightRef.current ||
+      (!force && webrtcLiveRef.current)
+    ) {
+      return;
+    }
+
+    recoveryInFlightRef.current = true;
+
+    try {
+      setStatus("requesting-token");
+      setMessage(
+        "Network restored · reconnecting WebRTC automatically",
+      );
+
+      await requireForegroundService().start(
+        "Reconnecting secure WebRTC camera",
+      );
+      setForegroundServiceState(true);
+
+      const nextCredentials = await requestCredentials();
+
+      setCredentials(null);
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 250);
+      });
+
+      setCredentials(nextCredentials);
+      setStatus("connecting");
+      setMessage(
+        "Reconnecting WebRTC camera automatically",
+      );
+
+      await updateForegroundNotification(
+        "Reconnecting secure WebRTC camera",
+      );
+
+      recoveryAttemptRef.current = 0;
+    } catch (error: any) {
+      setStatus("error");
+      setMessage(
+        error?.message ||
+          "Network unavailable · waiting to reconnect",
+      );
+      recoveryAttemptRef.current += 1;
+      scheduleWebRTCRecovery(
+        "Connection unavailable",
+        force,
+      );
+    } finally {
+      recoveryInFlightRef.current = false;
+    }
+  };
+
+  const scheduleWebRTCRecovery = (
+    reason: string,
+    force = false,
+  ): void => {
+    if (!desiredStreamingRef.current) {
+      return;
+    }
+
+    if (recoveryTimerRef.current) {
+      clearTimeout(recoveryTimerRef.current);
+    }
+
+    const attempt = recoveryAttemptRef.current;
+    const delayMs = Math.min(
+      30000,
+      1500 * Math.pow(2, Math.min(attempt, 4)),
+    );
+
+    setMessage(
+      `${reason} · automatic retry in ${Math.ceil(delayMs / 1000)}s`,
+    );
+
+    recoveryTimerRef.current = setTimeout(() => {
+      recoveryTimerRef.current = null;
+      void recoverWebRTCStream(force);
+    }, delayMs);
+  };
+
   useEffect(() => {
     const client = io(CCTV_BACKEND_URL, {
       transports: ["websocket"],
@@ -320,7 +431,25 @@ export default function App() {
     socketRef.current = client;
 
     client.on("connect", () => {
+      const disconnectedAt =
+        controlDisconnectedAtRef.current;
+      const outageMs =
+        disconnectedAt === null
+          ? 0
+          : Date.now() - disconnectedAt;
+
+      controlDisconnectedAtRef.current = null;
       setControlConnected(true);
+
+      if (
+        desiredStreamingRef.current &&
+        (outageMs >= 2000 || !webrtcLiveRef.current)
+      ) {
+        scheduleWebRTCRecovery(
+          "Control connection restored",
+          outageMs >= 2000,
+        );
+      }
 
       client.emit(
         "camera:register",
@@ -347,6 +476,13 @@ export default function App() {
 
     client.on("disconnect", () => {
       setControlConnected(false);
+      controlDisconnectedAtRef.current = Date.now();
+
+      if (desiredStreamingRef.current) {
+        setMessage(
+          "Network/control connection lost · reconnecting automatically",
+        );
+      }
     });
 
     client.on(
@@ -356,10 +492,21 @@ export default function App() {
           "Camera control connection error:",
           error.message,
         );
+
+        if (desiredStreamingRef.current) {
+          setMessage(
+            "Control server unavailable · waiting for network",
+          );
+        }
       },
     );
 
     return () => {
+      if (recoveryTimerRef.current) {
+        clearTimeout(recoveryTimerRef.current);
+        recoveryTimerRef.current = null;
+      }
+
       client.disconnect();
       socketRef.current = null;
     };
@@ -443,8 +590,25 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (webrtcLive) {
+      recoveryAttemptRef.current = 0;
+
+      if (recoveryTimerRef.current) {
+        clearTimeout(recoveryTimerRef.current);
+        recoveryTimerRef.current = null;
+      }
+    }
+
+    if (status === "stopped" && !webrtcLive) {
+      desiredStreamingRef.current = false;
+    }
+  }, [status, webrtcLive]);
+
   const startStream = async (): Promise<void> => {
     try {
+      desiredStreamingRef.current = true;
+      recoveryAttemptRef.current = 0;
       if (AppState.currentState !== "active") {
         throw new Error(
           "Open the CCTV app before starting the camera service",

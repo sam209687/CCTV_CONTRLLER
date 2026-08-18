@@ -1,0 +1,24 @@
+[Unit]
+Description=ROOT & SEED Premium AI Smart Shopkeeper
+Requires=root-seed-cctv-backend.service
+Wants=network-online.target
+After=network-online.target root-seed-cctv-backend.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=rs
+Group=rs
+WorkingDirectory=/home/rs/Videos/backend-nextjs
+Environment=HOME=/home/rs
+ExecStart=/home/rs/Videos/backend-nextjs/cctv-ai-worker/.venv/bin/python /home/rs/Videos/backend-nextjs/cctv-ai-worker/ai_shopkeeper_worker.py --env-file /home/rs/Videos/backend-nextjs/.env
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

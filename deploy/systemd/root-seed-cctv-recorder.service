@@ -1,0 +1,23 @@
+[Unit]
+Description=ROOT & SEED Continuous CCTV Recorder
+Wants=network-online.target
+After=network-online.target root-seed-cctv-backend.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=rs
+Group=rs
+WorkingDirectory=/home/rs/Videos/backend-nextjs
+Environment=HOME=/home/rs
+ExecStart=/home/rs/Videos/backend-nextjs/cctv-recorder-worker/run_continuous_recorder.sh
+Restart=always
+RestartSec=5
+TimeoutStopSec=120
+KillSignal=SIGTERM
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

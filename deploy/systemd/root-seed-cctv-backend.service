@@ -1,0 +1,24 @@
+[Unit]
+Description=ROOT & SEED CCTV Backend
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=rs
+Group=rs
+WorkingDirectory=/home/rs/Videos/backend-nextjs
+Environment=HOME=/home/rs
+Environment=NODE_ENV=production
+ExecStart=/home/rs/.nvm/versions/node/v22.18.0/bin/node /home/rs/Videos/backend-nextjs/server.js
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
